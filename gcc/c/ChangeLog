@@ -1,3 +1,134 @@
+2024-08-01  Release Manager
+
+	* GCC 14.2.0 released.
+
+2024-07-01  Jakub Jelinek  <jakub@redhat.com>
+
+	Backported from master:
+	2024-06-25  Jakub Jelinek  <jakub@redhat.com>
+		    Martin Uecker  <uecker@tugraz.at>
+
+	PR c/114930
+	PR c/115502
+	* c-decl.cc (c_update_type_canonical): Assert t is main variant
+	with 0 TYPE_QUALS.  Simplify and don't use check_qualified_type.
+	Deal with the case where build_qualified_type returns
+	TYPE_STRUCTURAL_EQUALITY_P type.
+
+2024-06-25  Sandra Loosemore  <sloosemore@baylibre.com>
+
+	Backported from master:
+	2024-06-25  Sandra Loosemore  <sloosemore@baylibre.com>
+
+	PR c/115587
+	* c-parser.cc (c_parser_omp_loop_nest): Move initializations to
+	point of declaration.
+
+2024-06-06  Jakub Jelinek  <jakub@redhat.com>
+
+	Backported from master:
+	2024-06-06  Jakub Jelinek  <jakub@redhat.com>
+
+	PR c/114493
+	* c-decl.cc (c_fixup_may_alias): New function.
+	(finish_struct): Call it if "may_alias" attribute is
+	specified.
+
+2024-05-07  Release Manager
+
+	* GCC 14.1.0 released.
+
+2024-04-19  Martin Uecker  <uecker@tugraz.at>
+	    Jakub Jelinek  <jakub@redhat.com>
+
+	PR lto/114574
+	PR c/114361
+	* c-decl.cc (shadow_tag_warned): For flag_isoc23 and code not
+	ENUMERAL_TYPE use SET_TYPE_STRUCTURAL_EQUALITY.
+	(parser_xref_tag): Likewise.
+	(start_struct): For flag_isoc23 use SET_TYPE_STRUCTURAL_EQUALITY.
+	(c_update_type_canonical): New function.
+	(finish_struct): Put NULL as second == operand rather than first.
+	Assert TYPE_STRUCTURAL_EQUALITY_P.  Call c_update_type_canonical.
+	* c-typeck.cc (composite_type_internal): Use
+	SET_TYPE_STRUCTURAL_EQUALITY.  Formatting fix.
+
+2024-04-09  Jakub Jelinek  <jakub@redhat.com>
+
+	* c-decl.cc (previous_tag): Fix duplicated words in comment; the the
+	-> the.
+	(diagnose_mismatched_decls): Fix duplicated words in comment;
+	about about -> about.
+
+2024-04-05  Martin Uecker  <uecker@tugraz.at>
+
+	Revert:
+	2024-04-02  Martin Uecker  <uecker@tugraz.at>
+
+	PR c/114361
+	* c-decl.cc (finish_struct): Set TYPE_CANONICAL when completing
+	strucute types.
+
+2024-04-02  Martin Uecker  <uecker@tugraz.at>
+
+	PR c/114361
+	* c-decl.cc (finish_struct): Set TYPE_CANONICAL when completing
+	strucute types.
+
+2024-03-14  Chung-Lin Tang  <cltang@baylibre.com>
+
+	* c-parser.cc (c_parser_oacc_data_clause): Add parsing support for
+	'readonly' modifier, set OMP_CLAUSE_MAP_READONLY if readonly modifier
+	found, update comments.
+	(c_parser_oacc_cache): Add parsing support for 'readonly' modifier,
+	set OMP_CLAUSE__CACHE__READONLY if readonly modifier found, update
+	comments.
+
+2024-03-08  Jakub Jelinek  <jakub@redhat.com>
+
+	PR debug/113918
+	* c-tree.h (c_type_dwarf_attribute): Declare.
+	* c-objc-common.h (LANG_HOOKS_TYPE_DWARF_ATTRIBUTE): Redefine.
+	* c-objc-common.cc: Include dwarf2.h.
+	(c_type_dwarf_attribute): New function.
+
+2024-02-26  Jakub Jelinek  <jakub@redhat.com>
+
+	PR c/114042
+	* c-parser.cc (c_parser_postfix_expression): Diagnose
+	__builtin_stdc_bit_* argument with ENUMERAL_TYPE or BOOLEAN_TYPE
+	type or if signed here rather than on the replacement builtins
+	in check_builtin_function_arguments.
+
+2024-02-22  Jakub Jelinek  <jakub@redhat.com>
+
+	PR c/114007
+	* c-parser.cc (c_parser_std_attribute): Remove loose_scope_p argument.
+	Instead of checking it, parse 2 CPP_COLONs with the first one with
+	COLON_SCOPE flag the same as CPP_SCOPE.
+	(c_parser_std_attribute_list): Remove loose_scope_p argument, don't
+	pass it to c_parser_std_attribute.
+	(c_parser_std_attribute_specifier): Adjust c_parser_std_attribute_list
+	caller.
+
+2024-02-13  Tobias Burnus  <tburnus@baylibre.com>
+
+	PR middle-end/113904
+	* c-parser.cc (c_parser_omp_context_selector): Handle splitting of
+	OMP_TRAIT_PROPERTY_EXPR into OMP_TRAIT_PROPERTY_{DEV_NUM,BOOL}_EXPR.
+
+2024-02-10  Jakub Jelinek  <jakub@redhat.com>
+
+	* c-decl.cc (get_parm_array_spec): Use HOST_WIDE_INT_PRINT_UNSIGNED
+	instead of "%lu" and casts to unsigned long or unsigned long long.
+
+2024-02-08  Joseph Myers  <josmyers@redhat.com>
+
+	PR c/113776
+	* c-typeck.cc (c_objc_common_truthvalue_conversion): Return an
+	integer constant expression for boolean conversion of floating
+	constant.
+
 2024-02-05  Jakub Jelinek  <jakub@redhat.com>
 
 	PR c/113740

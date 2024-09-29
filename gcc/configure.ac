@@ -1088,9 +1088,16 @@ AC_ARG_WITH(documentation-root-url,
       no)  AC_MSG_ERROR([documentation root URL not specified]) ;;
       */)  DOCUMENTATION_ROOT_URL="$withval" ;;
       *)   AC_MSG_ERROR([documentation root URL does not end with /]) ;;
-     esac],
-     DOCUMENTATION_ROOT_URL="https://gcc.gnu.org/onlinedocs/"
-)
+     esac],[
+     docroot_url_suffix=
+changequote(,)dnl
+     case "$gcc_version" in
+       *.[123456].0) docroot_url_suffix="gcc-$gcc_version/";;
+       *.[123456].1) docroot_url_suffix="gcc-`echo $gcc_version | sed 's/1$/0/'`/";;
+     esac
+changequote([,])dnl
+     DOCUMENTATION_ROOT_URL="https://gcc.gnu.org/onlinedocs/$docroot_url_suffix"
+])
 AC_DEFINE_UNQUOTED(DOCUMENTATION_ROOT_URL,"$DOCUMENTATION_ROOT_URL",
 	[Define to the root for documentation URLs.])
 
@@ -1245,7 +1252,7 @@ if test $gcc_cv_prog_makeinfo_modern = no; then
   AC_MSG_WARN([
 *** Makeinfo is missing or too old.
 *** Info documentation will not be built.])
-  BUILD_INFO=
+  BUILD_INFO=no-info
 else
   BUILD_INFO=info
 fi
@@ -5068,6 +5075,50 @@ _start:
       [`if test x"$gcc_cv_as_ix86_got32x" = xyes; then echo 1; else echo 0; fi`],
       [Define 0/1 if your assembler and linker support @GOT.])
 
+    # Check if gas and gld support "addq %r23,foo@GOTTPOFF(%rip), %r15"
+    # with R_X86_64_CODE_6_GOTTPOFF relocation.
+    if echo "$ld_ver" | grep GNU > /dev/null; then
+      if $gcc_cv_ld -V 2>/dev/null | grep elf_x86_64_sol2 > /dev/null; then
+        ld_ix86_gld_64_opt="-melf_x86_64_sol2"
+      else
+        ld_ix86_gld_64_opt="-melf_x86_64"
+      fi
+    fi
+    # Enforce 64-bit output with gas and gld.
+    if test x$gas = xyes; then
+      as_ix86_gas_64_opt="--64"
+    fi
+    conftest_s='
+	.text
+	.globl	_start
+	.type _start, @function
+_start:
+	addq	%r23,foo@GOTTPOFF(%rip), %r15
+	.section .tdata,"awT",@progbits
+	.type foo, @object
+foo:
+	.quad 0'
+    gcc_GAS_CHECK_FEATURE([R_X86_64_CODE_6_GOTTPOFF reloc],
+	gcc_cv_as_x86_64_code_6_gottpoff,
+	[$as_ix86_gas_64_opt],
+	[$conftest_s],
+	[if test x$gcc_cv_ld != x && test x$gcc_cv_objdump != x \
+	    && test x$gcc_cv_readelf != x \
+	    && $gcc_cv_readelf --relocs --wide conftest.o 2>&1 \
+	       | grep R_X86_64_CODE_6_GOTTPOFF > /dev/null 2>&1 \
+	    && $gcc_cv_ld $ld_ix86_gld_64_opt -o conftest conftest.o > /dev/null 2>&1; then
+	   if $gcc_cv_objdump -dw conftest 2>&1 \
+	      | grep "add \+\$0xf\+8,%r23,%r15" > /dev/null 2>&1; then
+	     gcc_cv_as_x86_64_code_6_gottpoff=yes
+	   else
+	     gcc_cv_as_x86_64_code_6_gottpoff=no
+	   fi
+	 fi
+	 rm -f conftest])
+    AC_DEFINE_UNQUOTED(HAVE_AS_R_X86_64_CODE_6_GOTTPOFF,
+      [`if test x"$gcc_cv_as_x86_64_code_6_gottpoff" = xyes; then echo 1; else echo 0; fi`],
+      [Define 0/1 if your assembler and linker support R_X86_64_CODE_6_GOTTPOFF.])
+
     gcc_GAS_CHECK_FEATURE([GOTOFF in data],
       gcc_cv_as_ix86_gotoff_in_data,
       [$as_ix86_gas_32_opt],
@@ -5264,6 +5315,8 @@ LCF0:
 [	lw $4,%gp_rel(foo)($4)],,
       [AC_DEFINE(MIPS_EXPLICIT_RELOCS, MIPS_EXPLICIT_RELOCS_BASE,
 		 [Define if assembler supports %reloc.])])
+    else
+      gcc_cv_as_mips_explicit_relocs=yes
     fi
 
     if test x$gcc_cv_as_mips_explicit_relocs = xno; then \
@@ -5497,7 +5550,7 @@ x:
 		[Define if your assembler supports -mrelax option.])])
     gcc_GAS_CHECK_FEATURE([conditional branch relaxation support],
       gcc_cv_as_loongarch_cond_branch_relax,
-      [],
+      [--fatal-warnings],
       [a:
        .rept 32769
        nop

@@ -150,6 +150,8 @@ along with GCC; see the file COPYING3.  If not see
 #include "alloc-pool.h"
 #include "symbol-summary.h"
 #include "ipa-utils.h"
+#include "sreal.h"
+#include "ipa-cp.h"
 #include "ipa-prop.h"
 #include "internal-fn.h"
 
@@ -760,6 +762,17 @@ likely_value (gimple *stmt)
 	continue;
       if (is_gimple_min_invariant (op))
 	has_constant_operand = true;
+      else if (TREE_CODE (op) == CONSTRUCTOR)
+	{
+	  unsigned j;
+	  tree val;
+	  FOR_EACH_CONSTRUCTOR_VALUE (CONSTRUCTOR_ELTS (op), j, val)
+	    if (CONSTANT_CLASS_P (val))
+	      {
+		has_constant_operand = true;
+		break;
+	      }
+	}
     }
 
   if (has_constant_operand)
@@ -3329,9 +3342,10 @@ convert_atomic_bit_not (enum internal_fn fn, gimple *use_stmt,
     return nullptr;
 
   gimple_stmt_iterator gsi;
-  gsi = gsi_for_stmt (use_stmt);
-  gsi_remove (&gsi, true);
   tree var = make_ssa_name (TREE_TYPE (lhs));
+  /* use_stmt need to be removed after use_nop_stmt,
+     so use_lhs can be released.  */
+  gimple *use_stmt_removal = use_stmt;
   use_stmt = gimple_build_assign (var, BIT_AND_EXPR, lhs, and_mask);
   gsi = gsi_for_stmt (use_not_stmt);
   gsi_insert_before (&gsi, use_stmt, GSI_NEW_STMT);
@@ -3340,6 +3354,8 @@ convert_atomic_bit_not (enum internal_fn fn, gimple *use_stmt,
 				   build_zero_cst (TREE_TYPE (mask)));
   gsi_insert_after (&gsi, g, GSI_NEW_STMT);
   gsi = gsi_for_stmt (use_not_stmt);
+  gsi_remove (&gsi, true);
+  gsi = gsi_for_stmt (use_stmt_removal);
   gsi_remove (&gsi, true);
   return use_stmt;
 }
@@ -3643,8 +3659,7 @@ optimize_atomic_bit_test_and (gimple_stmt_iterator *gsip,
 		       */
 		    }
 		  var = make_ssa_name (TREE_TYPE (use_rhs));
-		  gsi = gsi_for_stmt (use_stmt);
-		  gsi_remove (&gsi, true);
+		  gimple* use_stmt_removal = use_stmt;
 		  g = gimple_build_assign (var, BIT_AND_EXPR, use_rhs,
 					   and_mask);
 		  gsi = gsi_for_stmt (use_nop_stmt);
@@ -3660,6 +3675,8 @@ optimize_atomic_bit_test_and (gimple_stmt_iterator *gsip,
 					   nullptr, nullptr);
 		  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
 		  gsi = gsi_for_stmt (use_nop_stmt);
+		  gsi_remove (&gsi, true);
+		  gsi = gsi_for_stmt (use_stmt_removal);
 		  gsi_remove (&gsi, true);
 		}
 	    }

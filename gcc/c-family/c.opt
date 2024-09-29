@@ -514,6 +514,10 @@ Wcast-qual
 C ObjC C++ ObjC++ Var(warn_cast_qual) Warning
 Warn about casts which discard qualifiers.
 
+Wcast-user-defined
+C++ ObjC++ Var(warn_cast_user_defined) Warning Init(1)
+Warn about a cast to reference type that does not use a related user-defined conversion function.
+
 Wcatch-value
 C++ ObjC++ Warning Alias(Wcatch-value=, 1, 0)
 Warn about catch handlers of non-reference type.
@@ -801,6 +805,10 @@ Warn about printf/scanf/strftime/strfmon format string anomalies.
 Wframe-address
 C ObjC C++ ObjC++ Var(warn_frame_address) Warning LangEnabledBy(C ObjC C++ ObjC++,Wall)
 Warn when __builtin_frame_address or __builtin_return_address is used unsafely.
+
+Wglobal-module
+C++ ObjC++ Var(warn_global_module) Warning Init(1)
+Warn about the global module fragment not containing only preprocessing directives.
 
 Wif-not-aligned
 C ObjC C++ ObjC++ Var(warn_if_not_aligned) Init(1) Warning
@@ -1125,7 +1133,7 @@ C ObjC Var(warn_override_init_side_effects) Init(1) Warning
 Warn about overriding initializers with side effects.
 
 Wnrvo
-C++ ObjC++ Var(warn_nrvo)
+C++ ObjC++ Var(warn_nrvo) Warning
 Warn if the named return value optimization is not performed although it is allowed.
 
 Wpacked-bitfield-compat
@@ -1312,7 +1320,7 @@ C ObjC C++ ObjC++ LangEnabledBy(C ObjC C++ ObjC++,Wall, 3, 0) IntegerRange(0, 3)
 
 Wstrict-flex-arrays
 C C++ Var(warn_strict_flex_arrays) Warning
-Warn about inproper usages of flexible array members
+Warn about improper usages of flexible array members
 according to the level of -fstrict-flex-arrays.
 
 Wstrict-null-sentinel
@@ -1407,6 +1415,10 @@ Warn on primary template declaration.
 Wtautological-compare
 C ObjC C++ ObjC++ Var(warn_tautological_compare) Warning LangEnabledBy(C ObjC C++ ObjC++,Wall)
 Warn if a comparison always evaluates to true or false.
+
+Wtemplate-id-cdtor
+C++ ObjC++ Var(warn_template_id_cdtor) Warning
+Warn about simple-template-id in a constructor or destructor.
 
 Wterminate
 C++ ObjC++ Warning Var(warn_terminate) Init(1)

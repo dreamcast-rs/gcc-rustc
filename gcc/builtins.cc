@@ -6329,7 +6329,7 @@ expand_builtin_fork_or_exec (tree fn, tree exp, rtx target, int ignore)
   tree call;
 
   /* If we are not profiling, just call the function.  */
-  if (!profile_arc_flag)
+  if (!profile_arc_flag && !condition_coverage_flag)
     return NULL_RTX;
 
   /* Otherwise call the wrapper.  This should be equivalent for the rest of
@@ -9326,7 +9326,7 @@ fold_builtin_isascii (location_t loc, tree arg)
       /* Transform isascii(c) -> ((c & ~0x7f) == 0).  */
       arg = fold_build2 (BIT_AND_EXPR, integer_type_node, arg,
 			 build_int_cst (integer_type_node,
-					~ (unsigned HOST_WIDE_INT) 0x7f));
+					~ HOST_WIDE_INT_UC (0x7f)));
       return fold_build2_loc (loc, EQ_EXPR, integer_type_node,
 			      arg, integer_zero_node);
     }
@@ -10042,7 +10042,21 @@ fold_builtin_arith_overflow (location_t loc, enum built_in_function fcode,
       tree ctype = build_complex_type (type);
       tree call = build_call_expr_internal_loc (loc, ifn, ctype, 2,
 						arg0, arg1);
-      tree tgt = save_expr (call);
+      tree tgt;
+      if (ovf_only)
+	{
+	  tgt = call;
+	  intres = NULL_TREE;
+	}
+      else
+	{
+	  /* Force SAVE_EXPR even for calls which satisfy tree_invariant_p_1,
+	     as while the call itself is const, the REALPART_EXPR store is
+	     certainly not.  And in any case, we want just one call,
+	     not multiple and trying to CSE them later.  */
+	  TREE_SIDE_EFFECTS (call) = 1;
+	  tgt = save_expr (call);
+	}
       intres = build1_loc (loc, REALPART_EXPR, type, tgt);
       ovfres = build1_loc (loc, IMAGPART_EXPR, type, tgt);
       ovfres = fold_convert_loc (loc, boolean_type_node, ovfres);
@@ -10354,11 +10368,17 @@ fold_builtin_addc_subc (location_t loc, enum built_in_function fcode,
   tree ctype = build_complex_type (type);
   tree call = build_call_expr_internal_loc (loc, ifn, ctype, 2,
 					    args[0], args[1]);
+  /* Force SAVE_EXPR even for calls which satisfy tree_invariant_p_1,
+     as while the call itself is const, the REALPART_EXPR store is
+     certainly not.  And in any case, we want just one call,
+     not multiple and trying to CSE them later.  */
+  TREE_SIDE_EFFECTS (call) = 1;
   tree tgt = save_expr (call);
   tree intres = build1_loc (loc, REALPART_EXPR, type, tgt);
   tree ovfres = build1_loc (loc, IMAGPART_EXPR, type, tgt);
   call = build_call_expr_internal_loc (loc, ifn, ctype, 2,
 				       intres, args[2]);
+  TREE_SIDE_EFFECTS (call) = 1;
   tgt = save_expr (call);
   intres = build1_loc (loc, REALPART_EXPR, type, tgt);
   tree ovfres2 = build1_loc (loc, IMAGPART_EXPR, type, tgt);
@@ -10461,7 +10481,7 @@ fold_builtin_1 (location_t loc, tree expr, tree fndecl, tree arg0)
   tree type = TREE_TYPE (TREE_TYPE (fndecl));
   enum built_in_function fcode = DECL_FUNCTION_CODE (fndecl);
 
-  if (TREE_CODE (arg0) == ERROR_MARK)
+  if (error_operand_p (arg0))
     return NULL_TREE;
 
   if (tree ret = fold_const_call (as_combined_fn (fcode), type, arg0))
@@ -10601,8 +10621,8 @@ fold_builtin_2 (location_t loc, tree expr, tree fndecl, tree arg0, tree arg1)
   tree type = TREE_TYPE (TREE_TYPE (fndecl));
   enum built_in_function fcode = DECL_FUNCTION_CODE (fndecl);
 
-  if (TREE_CODE (arg0) == ERROR_MARK
-      || TREE_CODE (arg1) == ERROR_MARK)
+  if (error_operand_p (arg0)
+      || error_operand_p (arg1))
     return NULL_TREE;
 
   if (tree ret = fold_const_call (as_combined_fn (fcode), type, arg0, arg1))
@@ -10693,9 +10713,9 @@ fold_builtin_3 (location_t loc, tree fndecl,
   tree type = TREE_TYPE (TREE_TYPE (fndecl));
   enum built_in_function fcode = DECL_FUNCTION_CODE (fndecl);
 
-  if (TREE_CODE (arg0) == ERROR_MARK
-      || TREE_CODE (arg1) == ERROR_MARK
-      || TREE_CODE (arg2) == ERROR_MARK)
+  if (error_operand_p (arg0)
+      || error_operand_p (arg1)
+      || error_operand_p (arg2))
     return NULL_TREE;
 
   if (tree ret = fold_const_call (as_combined_fn (fcode), type,

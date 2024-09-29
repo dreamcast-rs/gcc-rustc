@@ -3285,11 +3285,15 @@ choose_mult_variant (machine_mode mode, HOST_WIDE_INT val,
       limit.latency = mult_cost - op_cost;
     }
 
-  synth_mult (&alg2, val - 1, &limit, mode);
-  alg2.cost.cost += op_cost;
-  alg2.cost.latency += op_cost;
-  if (CHEAPER_MULT_COST (&alg2.cost, &alg->cost))
-    *alg = alg2, *variant = add_variant;
+  if (val != HOST_WIDE_INT_MIN
+      || GET_MODE_UNIT_PRECISION (mode) == HOST_BITS_PER_WIDE_INT)
+    {
+      synth_mult (&alg2, val - HOST_WIDE_INT_1U, &limit, mode);
+      alg2.cost.cost += op_cost;
+      alg2.cost.latency += op_cost;
+      if (CHEAPER_MULT_COST (&alg2.cost, &alg->cost))
+	*alg = alg2, *variant = add_variant;
+    }
 
   return MULT_COST_LESS (&alg->cost, mult_cost);
 }
@@ -5613,11 +5617,9 @@ emit_store_flag_1 (rtx target, enum rtx_code code, rtx op0, rtx op1,
   enum insn_code icode;
   machine_mode compare_mode;
   enum mode_class mclass;
-  enum rtx_code scode;
 
   if (unsignedp)
     code = unsigned_condition (code);
-  scode = swap_condition (code);
 
   /* If one operand is constant, make it the second one.  Only do this
      if the other operand is not constant as well.  */
@@ -5732,6 +5734,8 @@ emit_store_flag_1 (rtx target, enum rtx_code code, rtx op0, rtx op1,
 
 	  if (GET_MODE_CLASS (mode) == MODE_FLOAT)
 	    {
+	      enum rtx_code scode = swap_condition (code);
+
 	      tem = emit_cstore (target, icode, scode, mode, compare_mode,
 				 unsignedp, op1, op0, normalizep, target_mode);
 	      if (tem)

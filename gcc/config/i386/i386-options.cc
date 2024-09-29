@@ -82,6 +82,8 @@ along with GCC; see the file COPYING3.  If not see
 #include "intl.h"
 #include "ifcvt.h"
 #include "symbol-summary.h"
+#include "sreal.h"
+#include "ipa-cp.h"
 #include "ipa-prop.h"
 #include "ipa-fnsummary.h"
 #include "wide-int-bitmask.h"
@@ -172,11 +174,12 @@ along with GCC; see the file COPYING3.  If not see
 #define m_ZNVER2 (HOST_WIDE_INT_1U<<PROCESSOR_ZNVER2)
 #define m_ZNVER3 (HOST_WIDE_INT_1U<<PROCESSOR_ZNVER3)
 #define m_ZNVER4 (HOST_WIDE_INT_1U<<PROCESSOR_ZNVER4)
+#define m_ZNVER5 (HOST_WIDE_INT_1U<<PROCESSOR_ZNVER5)
 #define m_BTVER1 (HOST_WIDE_INT_1U<<PROCESSOR_BTVER1)
 #define m_BTVER2 (HOST_WIDE_INT_1U<<PROCESSOR_BTVER2)
 #define m_BDVER	(m_BDVER1 | m_BDVER2 | m_BDVER3 | m_BDVER4)
 #define m_BTVER (m_BTVER1 | m_BTVER2)
-#define m_ZNVER	(m_ZNVER1 | m_ZNVER2 | m_ZNVER3 | m_ZNVER4)
+#define m_ZNVER (m_ZNVER1 | m_ZNVER2 | m_ZNVER3 | m_ZNVER4 | m_ZNVER5)
 #define m_AMD_MULTIPLE (m_ATHLON_K8 | m_AMDFAM10 | m_BDVER | m_BTVER \
 			| m_ZNVER)
 
@@ -813,7 +816,8 @@ static const struct processor_costs *processor_cost_table[] =
   &znver1_cost,
   &znver2_cost,
   &znver3_cost,
-  &znver4_cost
+  &znver4_cost,
+  &znver5_cost
 };
 
 /* Guarantee that the array is aligned with enum processor_type.  */
@@ -1427,6 +1431,7 @@ ix86_valid_target_attribute_tree (tree fndecl, tree args,
      scenario.  */
   if ((def->x_ix86_isa_flags2 & OPTION_MASK_ISA2_AVX10_1_256)
       && (opts->x_ix86_isa_flags & OPTION_MASK_ISA_AVX512F)
+      && (opts->x_ix86_isa_flags_explicit & OPTION_MASK_ISA_AVX512F)
       && !(def->x_ix86_isa_flags2_explicit & OPTION_MASK_ISA2_EVEX512)
       && !(opts->x_ix86_isa_flags2_explicit & OPTION_MASK_ISA2_EVEX512))
     opts->x_ix86_isa_flags2 |= OPTION_MASK_ISA2_EVEX512;
@@ -1918,6 +1923,54 @@ ix86_recompute_optlev_based_flags (struct gcc_options *opts,
 	    opts->x_flag_pcc_struct_return = DEFAULT_PCC_STRUCT_RETURN;
 	}
     }
+
+  /* Keep nonleaf frame pointers.  */
+  if (opts->x_flag_omit_frame_pointer)
+    opts->x_target_flags &= ~MASK_OMIT_LEAF_FRAME_POINTER;
+  else if (TARGET_OMIT_LEAF_FRAME_POINTER_P (opts->x_target_flags))
+    opts->x_flag_omit_frame_pointer = 1;
+}
+
+/* Implement part of TARGET_OVERRIDE_OPTIONS_AFTER_CHANGE hook.  */
+
+static void
+ix86_override_options_after_change_1 (struct gcc_options *opts,
+				      struct gcc_options *opts_set)
+{
+#define OPTS_SET_P(OPTION) opts_set->x_ ## OPTION
+#define OPTS(OPTION) opts->x_ ## OPTION
+
+  /* Disable unrolling small loops when there's explicit
+     -f{,no}unroll-loop.  */
+  if ((OPTS_SET_P (flag_unroll_loops))
+     || (OPTS_SET_P (flag_unroll_all_loops)
+	 && OPTS (flag_unroll_all_loops)))
+    {
+      if (!OPTS_SET_P (ix86_unroll_only_small_loops))
+	OPTS (ix86_unroll_only_small_loops) = 0;
+      /* Re-enable -frename-registers and -fweb if funroll-loops
+	 enabled.  */
+      if (!OPTS_SET_P (flag_web))
+	OPTS (flag_web) = OPTS (flag_unroll_loops);
+      if (!OPTS_SET_P (flag_rename_registers))
+	OPTS (flag_rename_registers) = OPTS (flag_unroll_loops);
+      /* -fcunroll-grow-size default follws -f[no]-unroll-loops.  */
+      if (!OPTS_SET_P (flag_cunroll_grow_size))
+	OPTS (flag_cunroll_grow_size)
+	  = (OPTS (flag_unroll_loops)
+	     || OPTS (flag_peel_loops)
+	     || OPTS (optimize) >= 3);
+    }
+  else
+    {
+      if (!OPTS_SET_P (flag_cunroll_grow_size))
+	OPTS (flag_cunroll_grow_size)
+	  = (OPTS (flag_peel_loops)
+	     || OPTS (optimize) >= 3);
+    }
+
+#undef OPTS
+#undef OPTS_SET_P
 }
 
 /* Implement TARGET_OVERRIDE_OPTIONS_AFTER_CHANGE hook.  */
@@ -1925,37 +1978,11 @@ ix86_recompute_optlev_based_flags (struct gcc_options *opts,
 void
 ix86_override_options_after_change (void)
 {
-  /* Default align_* from the processor table.  */
   ix86_default_align (&global_options);
 
   ix86_recompute_optlev_based_flags (&global_options, &global_options_set);
 
-  /* Disable unrolling small loops when there's explicit
-     -f{,no}unroll-loop.  */
-  if ((OPTION_SET_P (flag_unroll_loops))
-     || (OPTION_SET_P (flag_unroll_all_loops)
-	 && flag_unroll_all_loops))
-    {
-      if (!OPTION_SET_P (ix86_unroll_only_small_loops))
-	ix86_unroll_only_small_loops = 0;
-      /* Re-enable -frename-registers and -fweb if funroll-loops
-	 enabled.  */
-      if (!OPTION_SET_P (flag_web))
-	flag_web = flag_unroll_loops;
-      if (!OPTION_SET_P (flag_rename_registers))
-	flag_rename_registers = flag_unroll_loops;
-      /* -fcunroll-grow-size default follws -f[no]-unroll-loops.  */
-      if (!OPTION_SET_P (flag_cunroll_grow_size))
-	flag_cunroll_grow_size = flag_unroll_loops
-				 || flag_peel_loops
-				 || optimize >= 3;
-    }
-  else
-    {
-      if (!OPTION_SET_P (flag_cunroll_grow_size))
-	flag_cunroll_grow_size = flag_peel_loops || optimize >= 3;
-    }
-
+  ix86_override_options_after_change_1 (&global_options, &global_options_set);
 }
 
 /* Clear stack slot assignments remembered from previous functions.
@@ -2358,7 +2385,8 @@ ix86_option_override_internal (bool main_args_p,
 #define DEF_PTA(NAME) \
 	if (((processor_alias_table[i].flags & PTA_ ## NAME) != 0) \
 	    && PTA_ ## NAME != PTA_64BIT \
-	    && (TARGET_64BIT || PTA_ ## NAME != PTA_UINTR) \
+	    && (TARGET_64BIT || (PTA_ ## NAME != PTA_UINTR \
+				 && PTA_ ## NAME != PTA_APX_F))\
 	    && !TARGET_EXPLICIT_ ## NAME ## _P (opts)) \
 	  SET_TARGET_ ## NAME (opts);
 #include "i386-isa.def"
@@ -2525,7 +2553,9 @@ ix86_option_override_internal (bool main_args_p,
 
   set_ix86_tune_features (opts, ix86_tune, opts->x_ix86_dump_tunes);
 
-  ix86_override_options_after_change ();
+  ix86_recompute_optlev_based_flags (opts, opts_set);
+
+  ix86_override_options_after_change_1 (opts, opts_set);
 
   ix86_tune_cost = processor_cost_table[ix86_tune];
   /* TODO: ix86_cost should be chosen at instruction or function granuality
@@ -2559,6 +2589,9 @@ ix86_option_override_internal (bool main_args_p,
   if (TARGET_IAMCU_P (opts->x_target_flags)
       || TARGET_64BIT_P (opts->x_ix86_isa_flags))
     opts->x_ix86_regparm = REGPARM_MAX;
+
+  /* Default align_* from the processor table.  */
+  ix86_default_align (&global_options);
 
   /* Provide default for -mbranch-cost= value.  */
   SET_OPTION_IF_UNSET (opts, opts_set, ix86_branch_cost,
@@ -2596,12 +2629,6 @@ ix86_option_override_internal (bool main_args_p,
       if (!(opts_set->x_target_flags & MASK_NO_RED_ZONE))
         opts->x_target_flags |= MASK_NO_RED_ZONE;
     }
-
-  /* Keep nonleaf frame pointers.  */
-  if (opts->x_flag_omit_frame_pointer)
-    opts->x_target_flags &= ~MASK_OMIT_LEAF_FRAME_POINTER;
-  else if (TARGET_OMIT_LEAF_FRAME_POINTER_P (opts->x_target_flags))
-    opts->x_flag_omit_frame_pointer = 1;
 
   /* If we're doing fast math, we don't care about comparison order
      wrt NaNs.  This lets us use a shorter comparison sequence.  */
@@ -3238,7 +3265,7 @@ ix86_option_override_internal (bool main_args_p,
      on the command line.  */
   if (opts->x_flag_hardened && cf_okay_p)
     {
-      if (opts->x_flag_cf_protection == CF_NONE)
+      if (!opts_set->x_flag_cf_protection)
 	opts->x_flag_cf_protection = CF_FULL;
       else if (opts->x_flag_cf_protection != CF_FULL)
 	warning_at (UNKNOWN_LOCATION, OPT_Whardened,
@@ -3382,23 +3409,34 @@ ix86_set_func_type (tree fndecl)
 {
   /* No need to save and restore callee-saved registers for a noreturn
      function with nothrow or compiled with -fno-exceptions unless when
-     compiling with -O0 or -Og.
+     compiling with -O0 or -Og, except that it interferes with debugging
+     of callers.  So that backtrace works for those at least
+     in most cases, save the bp register if it is used, because it often
+     is used in callers to compute CFA.
 
      NB: Can't use just TREE_THIS_VOLATILE to check if this is a noreturn
      function.  The local-pure-const pass turns an interrupt function
      into a noreturn function by setting TREE_THIS_VOLATILE.  Normally
      the local-pure-const pass is run after ix86_set_func_type is called.
      When the local-pure-const pass is enabled for LTO, the interrupt
-     function is marked as noreturn in the IR output, which leads the
-     incompatible attribute error in LTO1.  */
-  bool has_no_callee_saved_registers
-    = ((TREE_THIS_VOLATILE (fndecl)
-	&& lookup_attribute ("noreturn", DECL_ATTRIBUTES (fndecl))
-	&& optimize
-	&& !optimize_debug
-	&& (TREE_NOTHROW (fndecl) || !flag_exceptions))
-       || lookup_attribute ("no_callee_saved_registers",
-			    TYPE_ATTRIBUTES (TREE_TYPE (fndecl))));
+     function is marked with TREE_THIS_VOLATILE in the IR output, which
+     leads to the incompatible attribute error in LTO1.  Ignore the
+     interrupt function in this case.  */
+  enum call_saved_registers_type no_callee_saved_registers
+    = TYPE_DEFAULT_CALL_SAVED_REGISTERS;
+  if (lookup_attribute ("no_callee_saved_registers",
+			TYPE_ATTRIBUTES (TREE_TYPE (fndecl))))
+    no_callee_saved_registers = TYPE_NO_CALLEE_SAVED_REGISTERS;
+  else if (ix86_noreturn_no_callee_saved_registers
+	   && TREE_THIS_VOLATILE (fndecl)
+	   && optimize
+	   && !optimize_debug
+	   && (TREE_NOTHROW (fndecl) || !flag_exceptions)
+	   && !lookup_attribute ("interrupt",
+				 TYPE_ATTRIBUTES (TREE_TYPE (fndecl)))
+	   && !lookup_attribute ("no_caller_saved_registers",
+				 TYPE_ATTRIBUTES (TREE_TYPE (fndecl))))
+    no_callee_saved_registers = TYPE_NO_CALLEE_SAVED_REGISTERS_EXCEPT_BP;
 
   if (cfun->machine->func_type == TYPE_UNKNOWN)
     {
@@ -3409,7 +3447,7 @@ ix86_set_func_type (tree fndecl)
 	    error_at (DECL_SOURCE_LOCATION (fndecl),
 		      "interrupt and naked attributes are not compatible");
 
-	  if (has_no_callee_saved_registers)
+	  if (no_callee_saved_registers)
 	    error_at (DECL_SOURCE_LOCATION (fndecl),
 		      "%qs and %qs attributes are not compatible",
 		      "interrupt", "no_callee_saved_registers");
@@ -3438,7 +3476,7 @@ ix86_set_func_type (tree fndecl)
 				TYPE_ATTRIBUTES (TREE_TYPE (fndecl))))
 	    cfun->machine->call_saved_registers
 	      = TYPE_NO_CALLER_SAVED_REGISTERS;
-	  if (has_no_callee_saved_registers)
+	  if (no_callee_saved_registers)
 	    {
 	      if (cfun->machine->call_saved_registers
 		  == TYPE_NO_CALLER_SAVED_REGISTERS)
@@ -3447,7 +3485,7 @@ ix86_set_func_type (tree fndecl)
 			  "no_caller_saved_registers",
 			  "no_callee_saved_registers");
 	      cfun->machine->call_saved_registers
-		= TYPE_NO_CALLEE_SAVED_REGISTERS;
+		= no_callee_saved_registers;
 	    }
 	}
     }

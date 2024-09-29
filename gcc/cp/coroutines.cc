@@ -1750,7 +1750,7 @@ expand_one_await_expression (tree *stmt, tree *await_expr, void *d)
 				    data->coro_fp);
   r = cp_build_init_expr (cond, r);
   finish_switch_cond (r, sw);
-  r = build_case_label (build_int_cst (integer_type_node, 0), NULL_TREE,
+  r = build_case_label (integer_zero_node, NULL_TREE,
 			create_anon_label_with_ctx (loc, actor));
   add_stmt (r); /* case 0: */
   /* Implement the suspend, a scope exit without clean ups.  */
@@ -1758,7 +1758,7 @@ expand_one_await_expression (tree *stmt, tree *await_expr, void *d)
 				    is_cont ? cont : susp);
   r = coro_build_cvt_void_expr_stmt (r, loc);
   add_stmt (r); /*   goto ret;  */
-  r = build_case_label (build_int_cst (integer_type_node, 1), NULL_TREE,
+  r = build_case_label (integer_one_node, NULL_TREE,
 			create_anon_label_with_ctx (loc, actor));
   add_stmt (r); /* case 1:  */
   r = build1_loc (loc, GOTO_EXPR, void_type_node, resume_label);
@@ -4246,7 +4246,7 @@ coro_rewrite_function_body (location_t fn_start, tree fnbody, tree orig,
 				  boolean_type_node, i_a_r_c);
       finish_if_stmt_cond (not_iarc, not_iarc_if);
       /* If the initial await resume called value is false, rethrow...  */
-      tree rethrow = build_throw (fn_start, NULL_TREE);
+      tree rethrow = build_throw (fn_start, NULL_TREE, tf_warning_or_error);
       suppress_warning (rethrow);
       finish_expr_stmt (rethrow);
       finish_then_clause (not_iarc_if);
@@ -4618,13 +4618,8 @@ morph_fn_to_coro (tree orig, tree *resumer, tree *destroyer)
 	  if (parm_i->this_ptr || parm_i->lambda_cobj)
 	    {
 	      /* We pass a reference to *this to the allocator lookup.  */
-	      tree tt = TREE_TYPE (TREE_TYPE (arg));
-	      tree this_ref = build1 (INDIRECT_REF, tt, arg);
-	      tt = cp_build_reference_type (tt, false);
-	      this_ref = convert_to_reference (tt, this_ref, CONV_STATIC,
-					       LOOKUP_NORMAL , NULL_TREE,
-					       tf_warning_or_error);
-	      vec_safe_push (args, convert_from_reference (this_ref));
+	      tree this_ref = cp_build_fold_indirect_ref (arg);
+	      vec_safe_push (args, this_ref);
 	    }
 	  else
 	    vec_safe_push (args, convert_from_reference (arg));
@@ -4843,14 +4838,7 @@ morph_fn_to_coro (tree orig, tree *resumer, tree *destroyer)
 	  if (parm.this_ptr || parm.lambda_cobj)
 	    {
 	      /* We pass a reference to *this to the param preview.  */
-	      tree tt = TREE_TYPE (arg);
-	      gcc_checking_assert (POINTER_TYPE_P (tt));
-	      tree ct = TREE_TYPE (tt);
-	      tree this_ref = build1 (INDIRECT_REF, ct, arg);
-	      tree rt = cp_build_reference_type (ct, false);
-	      this_ref = convert_to_reference (rt, this_ref, CONV_STATIC,
-					       LOOKUP_NORMAL, NULL_TREE,
-					       tf_warning_or_error);
+	      tree this_ref = cp_build_fold_indirect_ref (arg);
 	      vec_safe_push (promise_args, this_ref);
 	    }
 	  else if (parm.rv_ref)
@@ -5151,7 +5139,7 @@ morph_fn_to_coro (tree orig, tree *resumer, tree *destroyer)
       tree del_coro_fr = coro_get_frame_dtor (coro_fp, orig, frame_size,
 					      promise_type, fn_start);
       finish_expr_stmt (del_coro_fr);
-      tree rethrow = build_throw (fn_start, NULL_TREE);
+      tree rethrow = build_throw (fn_start, NULL_TREE, tf_warning_or_error);
       suppress_warning (rethrow);
       finish_expr_stmt (rethrow);
       finish_handler (handler);

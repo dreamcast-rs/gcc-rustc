@@ -310,6 +310,22 @@ get_amd_cpu (struct __processor_model *cpu_model,
 	  cpu_model->__cpu_subtype = AMDFAM19H_ZNVER3;
 	}
       break;
+    case 0x1a:
+      cpu_model->__cpu_type = AMDFAM1AH;
+      if (model <= 0x77)
+	{
+	  cpu = "znver5";
+	  CHECK___builtin_cpu_is ("znver5");
+	  cpu_model->__cpu_subtype = AMDFAM1AH_ZNVER5;
+	}
+      else if (has_cpu_feature (cpu_model, cpu_features2,
+				FEATURE_AVX512VP2INTERSECT))
+	{
+	  cpu = "znver5";
+	  CHECK___builtin_cpu_is ("znver5");
+	  cpu_model->__cpu_subtype = AMDFAM1AH_ZNVER5;
+	}
+      break;
     default:
       break;
     }
@@ -998,10 +1014,10 @@ get_available_features (struct __processor_model *cpu_model,
 	}
     }
 
-  /* Get Advanced Features at level 0x24 (eax = 0x24).  */
+  /* Get Advanced Features at level 0x24 (eax = 0x24, ecx = 0).  */
   if (avx10_set && max_cpuid_level >= 0x24)
     {
-      __cpuid (0x24, eax, ebx, ecx, edx);
+      __cpuid_count (0x24, 0, eax, ebx, ecx, edx);
       version = ebx & 0xff;
       if (ebx & bit_AVX10_256)
 	switch (version)

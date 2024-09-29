@@ -93,7 +93,7 @@ static void record_key_method_defined (tree);
 static tree create_array_type_for_decl (tree, tree, tree, location_t);
 static tree get_atexit_node (void);
 static tree get_dso_handle_node (void);
-static tree start_cleanup_fn (void);
+static tree start_cleanup_fn (bool);
 static void end_cleanup_fn (void);
 static tree cp_make_fname_decl (location_t, tree, int);
 static void initialize_predefined_identifiers (void);
@@ -2276,40 +2276,35 @@ duplicate_decls (tree newdecl, tree olddecl, bool hiding, bool was_hidden)
 
   if (modules_p ()
       && TREE_CODE (CP_DECL_CONTEXT (olddecl)) == NAMESPACE_DECL
-      && TREE_CODE (olddecl) != NAMESPACE_DECL
-      && !hiding)
+      && TREE_CODE (olddecl) != NAMESPACE_DECL)
     {
-      if (!module_may_redeclare (olddecl))
-	{
-	  if (DECL_ARTIFICIAL (olddecl))
-	    error ("declaration %qD conflicts with builtin", newdecl);
-	  else
-	    {
-	      error ("declaration %qD conflicts with import", newdecl);
-	      inform (olddecl_loc, "import declared %q#D here", olddecl);
-	    }
+      if (!module_may_redeclare (olddecl, newdecl))
+	return error_mark_node;
 
-	  return error_mark_node;
-	}
-
-      tree not_tmpl = STRIP_TEMPLATE (olddecl);
-      if (DECL_LANG_SPECIFIC (not_tmpl)
-	  && DECL_MODULE_ATTACH_P (not_tmpl)
-	  /* Typedefs are not entities and so are OK to be redeclared
-	     as exported: see [module.interface]/p6.  */
-	  && TREE_CODE (olddecl) != TYPE_DECL)
+      if (!hiding)
 	{
-	  if (DECL_MODULE_EXPORT_P (STRIP_TEMPLATE (newdecl))
-	      && !DECL_MODULE_EXPORT_P (not_tmpl))
+	  /* The old declaration should match the exportingness of the new
+	     declaration.  But hidden friend declarations just keep the
+	     exportingness of the old declaration; see CWG2588.  */
+	  tree not_tmpl = STRIP_TEMPLATE (olddecl);
+	  if (DECL_LANG_SPECIFIC (not_tmpl)
+	      && DECL_MODULE_ATTACH_P (not_tmpl)
+	      /* Typedefs are not entities and so are OK to be redeclared
+		 as exported: see [module.interface]/p6.  */
+	      && TREE_CODE (olddecl) != TYPE_DECL)
 	    {
-	      auto_diagnostic_group d;
-	      error ("conflicting exporting for declaration %qD", newdecl);
-	      inform (olddecl_loc,
-		      "previously declared here without exporting");
+	      if (DECL_MODULE_EXPORT_P (newdecl)
+		  && !DECL_MODULE_EXPORT_P (not_tmpl))
+		{
+		  auto_diagnostic_group d;
+		  error ("conflicting exporting for declaration %qD", newdecl);
+		  inform (olddecl_loc,
+			  "previously declared here without exporting");
+		}
 	    }
+	  else if (DECL_MODULE_EXPORT_P (newdecl))
+	    DECL_MODULE_EXPORT_P (not_tmpl) = true;
 	}
-      else if (DECL_MODULE_EXPORT_P (newdecl))
-	DECL_MODULE_EXPORT_P (not_tmpl) = true;
     }
 
   /* We have committed to returning OLDDECL at this point.  */
@@ -3125,6 +3120,16 @@ duplicate_decls (tree newdecl, tree olddecl, bool hiding, bool was_hidden)
   if (TREE_CODE (newdecl) == FIELD_DECL)
     DECL_PACKED (olddecl) = DECL_PACKED (newdecl);
 
+  /* Merge module entity mapping information.  */
+  if (DECL_LANG_SPECIFIC (olddecl)
+      && (DECL_MODULE_ENTITY_P (olddecl)
+	  || DECL_MODULE_KEYED_DECLS_P (olddecl)))
+    {
+      retrofit_lang_decl (newdecl);
+      DECL_MODULE_ENTITY_P (newdecl) = DECL_MODULE_ENTITY_P (olddecl);
+      DECL_MODULE_KEYED_DECLS_P (newdecl) = DECL_MODULE_KEYED_DECLS_P (olddecl);
+    }
+
   /* The DECL_LANG_SPECIFIC information in OLDDECL will be replaced
      with that from NEWDECL below.  */
   if (DECL_LANG_SPECIFIC (olddecl))
@@ -3330,6 +3335,10 @@ duplicate_decls (tree newdecl, tree olddecl, bool hiding, bool was_hidden)
      reclaiming memory. */
   if (flag_concepts)
     remove_constraints (newdecl);
+
+  /* And similarly for any module tracking data.  */
+  if (modules_p ())
+    remove_defining_module (newdecl);
 
   ggc_free (newdecl);
 
@@ -6092,10 +6101,10 @@ start_decl (const cp_declarator *declarator,
     {
       /* A function-scope decl of some namespace-scope decl.  */
       DECL_LOCAL_DECL_P (decl) = true;
-      if (named_module_purview_p ())
+      if (named_module_attach_p ())
 	error_at (declarator->id_loc,
-		  "block-scope extern declaration %q#D not permitted"
-		  " in module purview", decl);
+		  "block-scope extern declaration %q#D must not be"
+		  " attached to a named module", decl);
     }
 
   /* Enter this declaration into the symbol table.  Don't push the plain
@@ -9262,7 +9271,9 @@ static GTY((cache)) decl_tree_cache_map *decomp_type_table;
 tree
 lookup_decomp_type (tree v)
 {
-  return *decomp_type_table->get (v);
+  if (tree *slot = decomp_type_table->get (v))
+    return *slot;
+  return NULL_TREE;
 }
 
 /* Mangle a decomposition declaration if needed.  Arguments like
@@ -9645,32 +9656,37 @@ declare_global_var (tree name, tree type)
   return decl;
 }
 
-/* Returns the type for the argument to "__cxa_atexit" (or "atexit",
-   if "__cxa_atexit" is not being used) corresponding to the function
+/* Returns the type for the argument to "atexit" corresponding to the function
    to be called when the program exits.  */
 
 static tree
-get_atexit_fn_ptr_type (void)
+get_atexit_fn_ptr_type ()
 {
-  tree fn_type;
-
   if (!atexit_fn_ptr_type_node)
     {
-      tree arg_type;
-      if (flag_use_cxa_atexit 
-	  && !targetm.cxx.use_atexit_for_cxa_atexit ())
-	/* The parameter to "__cxa_atexit" is "void (*)(void *)".  */
-	arg_type = ptr_type_node;
-      else
-	/* The parameter to "atexit" is "void (*)(void)".  */
-	arg_type = NULL_TREE;
-      
-      fn_type = build_function_type_list (void_type_node,
-					  arg_type, NULL_TREE);
+      tree fn_type = build_function_type_list (void_type_node, NULL_TREE);
       atexit_fn_ptr_type_node = build_pointer_type (fn_type);
     }
 
   return atexit_fn_ptr_type_node;
+}
+
+/* Returns the type for the argument to "__cxa_atexit", "__cxa_thread_atexit"
+   or "__cxa_throw" corresponding to the destructor to be called when the
+   program exits.  */
+
+tree
+get_cxa_atexit_fn_ptr_type ()
+{
+  if (!cleanup_type)
+    {
+      tree fntype = build_function_type_list (void_type_node,
+					      ptr_type_node, NULL_TREE);
+      fntype = targetm.cxx.adjust_cdtor_callabi_fntype (fntype);
+      cleanup_type = build_pointer_type (fntype);
+    }
+
+  return cleanup_type;
 }
 
 /* Returns a pointer to the `atexit' function.  Note that if
@@ -9703,7 +9719,7 @@ get_atexit_node (void)
       use_aeabi_atexit = targetm.cxx.use_aeabi_atexit ();
       /* First, build the pointer-to-function type for the first
 	 argument.  */
-      fn_ptr_type = get_atexit_fn_ptr_type ();
+      fn_ptr_type = get_cxa_atexit_fn_ptr_type ();
       /* Then, build the rest of the argument types.  */
       argtype2 = ptr_type_node;
       if (use_aeabi_atexit)
@@ -9786,7 +9802,7 @@ get_thread_atexit_node (void)
 
      int __cxa_thread_atexit (void (*)(void *), void *, void *) */
   tree fn_type = build_function_type_list (integer_type_node,
-					   get_atexit_fn_ptr_type (),
+					   get_cxa_atexit_fn_ptr_type (),
 					   ptr_type_node, ptr_type_node,
 					   NULL_TREE);
 
@@ -9828,12 +9844,13 @@ get_dso_handle_node (void)
 }
 
 /* Begin a new function with internal linkage whose job will be simply
-   to destroy some particular variable.  */
+   to destroy some particular variable.  OB_PARM is true if object pointer
+   is passed to the cleanup function, otherwise no argument is passed.  */
 
 static GTY(()) int start_cleanup_cnt;
 
 static tree
-start_cleanup_fn (void)
+start_cleanup_fn (bool ob_parm)
 {
   char name[32];
 
@@ -9844,8 +9861,9 @@ start_cleanup_fn (void)
 
   /* Build the name of the function.  */
   sprintf (name, "__tcf_%d", start_cleanup_cnt++);
+  tree fntype = TREE_TYPE (ob_parm ? get_cxa_atexit_fn_ptr_type ()
+				   : get_atexit_fn_ptr_type ());
   /* Build the function declaration.  */
-  tree fntype = TREE_TYPE (get_atexit_fn_ptr_type ());
   tree fndecl = build_lang_decl (FUNCTION_DECL, get_identifier (name), fntype);
   DECL_CONTEXT (fndecl) = FROB_CONTEXT (current_namespace);
   /* It's a function with internal linkage, generated by the
@@ -9858,7 +9876,7 @@ start_cleanup_fn (void)
      emissions this way.  */
   DECL_DECLARED_INLINE_P (fndecl) = 1;
   DECL_INTERFACE_KNOWN (fndecl) = 1;
-  if (flag_use_cxa_atexit && !targetm.cxx.use_atexit_for_cxa_atexit ())
+  if (ob_parm)
     {
       /* Build the parameter.  */
       tree parmdecl = cp_build_parm_decl (fndecl, NULL_TREE, ptr_type_node);
@@ -9935,8 +9953,8 @@ register_dtor_fn (tree decl)
       build_cleanup (decl);
   
       /* Now start the function.  */
-      cleanup = start_cleanup_fn ();
-      
+      cleanup = start_cleanup_fn (ob_parm);
+
       /* Now, recompute the cleanup.  It may contain SAVE_EXPRs that refer
 	 to the original function, rather than the anonymous one.  That
 	 will make the back end think that nested functions are in use,
@@ -9965,7 +9983,7 @@ register_dtor_fn (tree decl)
     {
       /* We must convert CLEANUP to the type that "__cxa_atexit"
 	 expects.  */
-      cleanup = build_nop (get_atexit_fn_ptr_type (), cleanup);
+      cleanup = build_nop (get_cxa_atexit_fn_ptr_type (), cleanup);
       /* "__cxa_atexit" will pass the address of DECL to the
 	 cleanup function.  */
       mark_used (decl);
@@ -10754,9 +10772,15 @@ grokfndecl (tree ctype,
 
   /* Members of anonymous types and local classes have no linkage; make
      them internal.  If a typedef is made later, this will be changed.  */
-  if (ctype && (!TREE_PUBLIC (TYPE_MAIN_DECL (ctype))
-		|| decl_function_context (TYPE_MAIN_DECL (ctype))))
+  if (ctype && !TREE_PUBLIC (TYPE_MAIN_DECL (ctype)))
     publicp = 0;
+  else if (ctype && decl_function_context (TYPE_MAIN_DECL (ctype)))
+    /* But members of local classes in a module CMI should have their
+       definitions exported, in case they are (directly or indirectly)
+       used by an importer.  We don't just use module_has_cmi_p here
+       because for entities in the GMF we don't yet know whether this
+       module will have a CMI, so we'll conservatively assume it might.  */
+    publicp = module_maybe_has_cmi_p ();
 
   if (publicp && cxx_dialect == cxx98)
     {
@@ -13720,6 +13744,12 @@ grokdeclarator (const cp_declarator *declarator,
 			inform (DECL_SOURCE_LOCATION (xobj_parm),
 				"explicit object parameter declared here");
 		      }
+		    if (unqualified_id
+			&& identifier_p (unqualified_id)
+			&& IDENTIFIER_NEWDEL_OP_P (unqualified_id))
+		      error_at (DECL_SOURCE_LOCATION (xobj_parm),
+				"%qD cannot be an explicit object member "
+				"function", unqualified_id);
 		  }
 	      }
 	    tree pushed_scope = NULL_TREE;
@@ -15259,7 +15289,12 @@ grokdeclarator (const cp_declarator *declarator,
     /* Record constancy and volatility on the DECL itself .  There's
        no need to do this when processing a template; we'll do this
        for the instantiated declaration based on the type of DECL.  */
-    if (!processing_template_decl)
+    if (!processing_template_decl
+	/* Don't do it for instantiated variable templates either,
+	   cp_apply_type_quals_to_decl should have been called on it
+	   already and might have been overridden in cp_finish_decl
+	   if initializer needs runtime initialization.  */
+	&& (!VAR_P (decl) || !DECL_TEMPLATE_INSTANTIATED (decl)))
       cp_apply_type_quals_to_decl (type_quals, decl);
 
     return decl;
@@ -16607,12 +16642,7 @@ xref_tag (enum tag_types tag_code, tree name,
 	{
 	  tree decl = TYPE_NAME (t);
 	  if (!module_may_redeclare (decl))
-	    {
-	      auto_diagnostic_group d;
-	      error ("cannot declare %qD in a different module", decl);
-	      inform (DECL_SOURCE_LOCATION (decl), "previously declared here");
-	      return error_mark_node;
-	    }
+	    return error_mark_node;
 
 	  tree not_tmpl = STRIP_TEMPLATE (decl);
 	  if (DECL_LANG_SPECIFIC (not_tmpl)
@@ -16955,8 +16985,21 @@ start_enum (tree name, tree enumtype, tree underlying_type,
      to instantiation time is the comparison of underlying types.  */
   if (enumtype && TREE_CODE (enumtype) == ENUMERAL_TYPE)
     {
-      if (scoped_enum_p != SCOPED_ENUM_P (enumtype))
+      /* Attempt to set the declaring module.  */
+      if (modules_p ())
 	{
+	  tree decl = TYPE_NAME (enumtype);
+	  if (!module_may_redeclare (decl))
+	    enumtype = error_mark_node;
+	  else
+	    set_instantiating_module (decl);
+	}
+
+      if (enumtype == error_mark_node)
+	;
+      else if (scoped_enum_p != SCOPED_ENUM_P (enumtype))
+	{
+	  auto_diagnostic_group d;
 	  error_at (input_location, "scoped/unscoped mismatch "
 		    "in enum %q#T", enumtype);
 	  inform (DECL_SOURCE_LOCATION (TYPE_MAIN_DECL (enumtype)),
@@ -16965,6 +17008,7 @@ start_enum (tree name, tree enumtype, tree underlying_type,
 	}
       else if (ENUM_FIXED_UNDERLYING_TYPE_P (enumtype) != !! underlying_type)
 	{
+	  auto_diagnostic_group d;
 	  error_at (input_location, "underlying type mismatch "
 		    "in enum %q#T", enumtype);
 	  inform (DECL_SOURCE_LOCATION (TYPE_MAIN_DECL (enumtype)),
@@ -16975,24 +17019,12 @@ start_enum (tree name, tree enumtype, tree underlying_type,
 	       && !same_type_p (underlying_type,
 				ENUM_UNDERLYING_TYPE (enumtype)))
 	{
+	  auto_diagnostic_group d;
 	  error_at (input_location, "different underlying type "
 		    "in enum %q#T", enumtype);
 	  inform (DECL_SOURCE_LOCATION (TYPE_MAIN_DECL (enumtype)),
 		  "previous definition here");
 	  underlying_type = NULL_TREE;
-	}
-
-      if (modules_p ())
-	{
-	  if (!module_may_redeclare (TYPE_NAME (enumtype)))
-	    {
-	      error ("cannot define %qD in different module",
-		     TYPE_NAME (enumtype));
-	      inform (DECL_SOURCE_LOCATION (TYPE_NAME (enumtype)),
-		      "declared here");
-	      enumtype = error_mark_node;
-	    }
-	  set_instantiating_module (TYPE_NAME (enumtype));
 	}
     }
 
@@ -18893,10 +18925,10 @@ grokmethod (cp_decl_specifier_seq *declspecs,
   check_template_shadow (fndecl);
 
   /* p1779 ABI-Isolation makes inline not a default for in-class
-     definitions in named module purview.  If the user explicitly
+     definitions attached to a named module.  If the user explicitly
      made it inline, grokdeclarator will already have done the right
      things.  */
-  if ((!named_module_purview_p ()
+  if ((!named_module_attach_p ()
        || flag_module_implicit_inline
       /* Lambda's operator function remains inline.  */
        || LAMBDA_TYPE_P (DECL_CONTEXT (fndecl)))
@@ -18965,6 +18997,8 @@ maybe_register_incomplete_var (tree var)
 	  vec_safe_push (incomplete_vars, iv);
 	}
       else if (!(DECL_LANG_SPECIFIC (var) && DECL_TEMPLATE_INFO (var))
+	       && DECL_CLASS_SCOPE_P (var)
+	       && TYPE_BEING_DEFINED (DECL_CONTEXT (var))
 	       && decl_constant_var_p (var)
 	       && (TYPE_PTRMEM_P (inner_type) || CLASS_TYPE_P (inner_type)))
 	{

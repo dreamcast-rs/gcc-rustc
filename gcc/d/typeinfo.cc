@@ -206,7 +206,7 @@ make_frontend_typeinfo (Identifier *ident, ClassDeclaration *base = NULL)
 
   /* Create object module in order to complete the semantic.  */
   if (!object_module->_scope)
-    importAll (object_module, NULL);
+    dmd::importAll (object_module, NULL);
 
   /* Object class doesn't exist, create a stub one that will cause an error if
      used.  */
@@ -232,7 +232,7 @@ make_frontend_typeinfo (Identifier *ident, ClassDeclaration *base = NULL)
 						      true);
   tinfo->parent = object_module;
   tinfo->members = d_gc_malloc<Dsymbols> ();
-  dsymbolSemantic (tinfo, object_module->_scope);
+  dmd::dsymbolSemantic (tinfo, object_module->_scope);
   tinfo->baseClass = base;
   /* This is a compiler generated class, and shouldn't be mistaken for being
      the type declared in the runtime library.  */
@@ -415,7 +415,7 @@ class TypeInfoVisitor : public Visitor
     tree decl = this->internal_reference (value);
     TREE_READONLY (decl) = 1;
 
-    value = d_array_value (build_ctype (Type::tchar->arrayOf ()),
+    value = d_array_value (build_ctype (dmd::arrayOf (Type::tchar)),
 			   size_int (len), build_address (decl));
     this->layout_field (value);
   }
@@ -577,8 +577,8 @@ public:
 
   void visit (TypeInfoConstDeclaration *d) final override
   {
-    Type *tm = mutableOf (d->tinfo);
-    tm = merge2 (tm);
+    Type *tm = dmd::mutableOf (d->tinfo);
+    tm = dmd::merge2 (tm);
 
     /* The vtable for TypeInfo_Const.  */
     this->layout_base (Type::typeinfoconst);
@@ -594,8 +594,8 @@ public:
 
   void visit (TypeInfoInvariantDeclaration *d) final override
   {
-    Type *tm = mutableOf (d->tinfo);
-    tm = merge2 (tm);
+    Type *tm = dmd::mutableOf (d->tinfo);
+    tm = dmd::merge2 (tm);
 
     /* The vtable for TypeInfo_Invariant.  */
     this->layout_base (Type::typeinfoinvariant);
@@ -611,8 +611,8 @@ public:
 
   void visit (TypeInfoSharedDeclaration *d) final override
   {
-    Type *tm = unSharedOf (d->tinfo);
-    tm = merge2 (tm);
+    Type *tm = dmd::unSharedOf (d->tinfo);
+    tm = dmd::merge2 (tm);
 
     /* The vtable for TypeInfo_Shared.  */
     this->layout_base (Type::typeinfoshared);
@@ -628,8 +628,8 @@ public:
 
   void visit (TypeInfoWildDeclaration *d) final override
   {
-    Type *tm = mutableOf (d->tinfo);
-    tm = merge2 (tm);
+    Type *tm = dmd::mutableOf (d->tinfo);
+    tm = dmd::merge2 (tm);
 
     /* The vtable for TypeInfo_Inout.  */
     this->layout_base (Type::typeinfowild);
@@ -1091,7 +1091,7 @@ public:
     this->layout_field (xcmp);
 
     /* string function(const(void)*) xtoString;  */
-    FuncDeclaration *fdx = search_toString (sd);
+    FuncDeclaration *fdx = dmd::search_toString (sd);
     if (fdx)
       this->layout_field (build_address (get_symbol_decl (fdx)));
     else
@@ -1099,7 +1099,7 @@ public:
 
     /* StructFlags m_flags;  */
     int m_flags = StructFlags::none;
-    if (hasPointers (ti))
+    if (dmd::hasPointers (ti))
       m_flags |= StructFlags::hasPointers;
     this->layout_field (build_integer_cst (m_flags, d_uint_type));
 
@@ -1137,7 +1137,7 @@ public:
     this->layout_base (Type::typeinfotypelist);
 
     /* TypeInfo[] elements;  */
-    Type *satype = Type::tvoidptr->sarrayOf (ti->arguments->length);
+    Type *satype = dmd::sarrayOf (Type::tvoidptr, ti->arguments->length);
     vec<constructor_elt, va_gc> *elms = NULL;
     for (size_t i = 0; i < ti->arguments->length; i++)
       {
@@ -1551,7 +1551,7 @@ create_typeinfo (Type *type, Module *mod, bool generate)
     create_frontend_tinfo_types ();
 
   /* Do this since not all Type's are merged.  */
-  Type *t = merge2 (type);
+  Type *t = dmd::merge2 (type);
   Identifier *ident;
 
   if (!t->vtinfo)

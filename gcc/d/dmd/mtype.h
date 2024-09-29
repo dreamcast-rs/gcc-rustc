@@ -14,6 +14,7 @@
 
 #include "arraytypes.h"
 #include "ast_node.h"
+#include "expression.h"
 #include "globals.h"
 #include "visitor.h"
 
@@ -39,9 +40,11 @@ typedef union tree_node type;
 typedef struct TYPE type;
 #endif
 
-extern const char* toChars(const Type* const t);
-Type *typeSemantic(Type *t, const Loc &loc, Scope *sc);
-Type *merge(Type *type);
+namespace dmd
+{
+    Type *typeSemantic(Type *t, const Loc &loc, Scope *sc);
+    Type *merge(Type *type);
+}
 
 enum class TY : uint8_t
 {
@@ -218,7 +221,6 @@ public:
     Type *copy() const;
     virtual Type *syntaxCopy();
     bool equals(const RootObject * const o) const override;
-    bool equivalent(Type *t);
     // kludge for template.isType()
     DYNCAST dyncast() const override final { return DYNCAST_TYPE; }
     size_t getUniqueID() const;
@@ -253,14 +255,7 @@ public:
     bool isSharedWild() const  { return (mod & (MODshared | MODwild)) == (MODshared | MODwild); }
     bool isNaked() const       { return mod == 0; }
     Type *nullAttributes() const;
-    Type *addMod(MOD mod);
-    virtual Type *addStorageClass(StorageClass stc);
-    Type *pointerTo();
-    Type *referenceTo();
-    Type *arrayOf();
-    Type *sarrayOf(dinteger_t dim);
     bool hasDeprecatedAliasThis();
-    Type *aliasthisOf();
     virtual Type *makeConst();
     virtual Type *makeImmutable();
     virtual Type *makeShared();
@@ -274,11 +269,7 @@ public:
     virtual MATCH implicitConvTo(Type *to);
     virtual MATCH constConv(Type *to);
     virtual unsigned char deduceWild(Type *t, bool isRef);
-    virtual Type *substWildTo(unsigned mod);
 
-    Type *unqualify(unsigned m);
-
-    virtual Type *toHeadMutable();
     virtual ClassDeclaration *isClassHandle();
     virtual structalign_t alignment();
     virtual Expression *defaultInitLiteral(const Loc &loc);
@@ -575,16 +566,14 @@ public:
     TRUST trust;                 // level of trust
     PURE purity;                 // PURExxxx
     char inuse;
-    Expressions *fargs;          // function arguments
+    ArgumentList inferenceArguments; // function arguments
 
     static TypeFunction *create(Parameters *parameters, Type *treturn, VarArg varargs, LINK linkage, StorageClass stc = 0);
     const char *kind() override;
     TypeFunction *syntaxCopy() override;
     bool hasLazyParameters();
     bool isDstyleVariadic() const;
-    Type *addStorageClass(StorageClass stc) override;
 
-    Type *substWildTo(unsigned mod) override;
     MATCH constConv(Type *to) override;
 
     bool isnothrow() const;
@@ -626,7 +615,6 @@ public:
     static TypeDelegate *create(TypeFunction *t);
     const char *kind() override;
     TypeDelegate *syntaxCopy() override;
-    Type *addStorageClass(StorageClass stc) override;
     uinteger_t size(const Loc &loc) override;
     unsigned alignsize() override;
     MATCH implicitConvTo(Type *to) override;
@@ -756,7 +744,6 @@ public:
     MATCH implicitConvTo(Type *to) override;
     MATCH constConv(Type *to) override;
     unsigned char deduceWild(Type *t, bool isRef) override;
-    Type *toHeadMutable() override;
 
     void accept(Visitor *v) override { v->visit(this); }
 };
@@ -809,7 +796,6 @@ public:
     MATCH implicitConvTo(Type *to) override;
     MATCH constConv(Type *to) override;
     unsigned char deduceWild(Type *t, bool isRef) override;
-    Type *toHeadMutable() override;
     bool isZeroInit(const Loc &loc) override;
     bool isscope() override;
     bool isBoolean() override;
@@ -883,25 +869,37 @@ public:
 
 /**************************************************************/
 
-
-// If the type is a class or struct, returns the symbol for it, else null.
-AggregateDeclaration *isAggregate(Type *t);
-bool hasPointers(Type *t);
-// return the symbol to which type t resolves
-Dsymbol *toDsymbol(Type *t, Scope *sc);
-Covariant covariant(Type *, Type *, StorageClass * = NULL, bool = false);
-bool isBaseOf(Type *tthis, Type *t, int *poffset);
-Type *trySemantic(Type *type, const Loc &loc, Scope *sc);
-void purityLevel(TypeFunction *type);
-Type *merge2(Type *type);
-Type *constOf(Type *type);
-Type *immutableOf(Type *type);
-Type *mutableOf(Type *type);
-Type *sharedOf(Type *type);
-Type *sharedConstOf(Type *type);
-Type *unSharedOf(Type *type);
-Type *wildOf(Type *type);
-Type *wildConstOf(Type *type);
-Type *sharedWildOf(Type *type);
-Type *sharedWildConstOf(Type *type);
-Type *castMod(Type *type, MOD mod);
+namespace dmd
+{
+    // If the type is a class or struct, returns the symbol for it, else null.
+    AggregateDeclaration *isAggregate(Type *t);
+    bool hasPointers(Type *t);
+    // return the symbol to which type t resolves
+    Dsymbol *toDsymbol(Type *t, Scope *sc);
+    bool equivalent(Type *src, Type *t);
+    Covariant covariant(Type *, Type *, StorageClass * = NULL, bool = false);
+    bool isBaseOf(Type *tthis, Type *t, int *poffset);
+    Type *trySemantic(Type *type, const Loc &loc, Scope *sc);
+    Type *pointerTo(Type *type);
+    Type *referenceTo(Type *type);
+    Type *merge2(Type *type);
+    Type *sarrayOf(Type *type, dinteger_t dim);
+    Type *arrayOf(Type *type);
+    Type *constOf(Type *type);
+    Type *immutableOf(Type *type);
+    Type *mutableOf(Type *type);
+    Type *sharedOf(Type *type);
+    Type *sharedConstOf(Type *type);
+    Type *unSharedOf(Type *type);
+    Type *wildOf(Type *type);
+    Type *wildConstOf(Type *type);
+    Type *sharedWildOf(Type *type);
+    Type *sharedWildConstOf(Type *type);
+    Type *unqualify(Type *type, unsigned m);
+    Type *toHeadMutable(Type *type);
+    Type *aliasthisOf(Type *type);
+    Type *castMod(Type *type, MOD mod);
+    Type *addMod(Type *type, MOD mod);
+    Type *addStorageClass(Type *type, StorageClass stc);
+    Type *substWildTo(Type *type, unsigned mod);
+}

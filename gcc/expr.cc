@@ -355,8 +355,16 @@ convert_mode_scalar (rtx to, rtx from, int unsignedp)
 		      && REAL_MODE_FORMAT (from_mode) == &ieee_half_format));
 
       if (GET_MODE_PRECISION (from_mode) == GET_MODE_PRECISION (to_mode))
-	/* Conversion between decimal float and binary float, same size.  */
-	tab = DECIMAL_FLOAT_MODE_P (from_mode) ? trunc_optab : sext_optab;
+	{
+	  if (REAL_MODE_FORMAT (to_mode) == &arm_bfloat_half_format
+	      && REAL_MODE_FORMAT (from_mode) == &ieee_half_format)
+	    /* libgcc implements just __trunchfbf2, not __extendhfbf2.  */
+	    tab = trunc_optab;
+	  else
+	    /* Conversion between decimal float and binary float, same
+	       size.  */
+	    tab = DECIMAL_FLOAT_MODE_P (from_mode) ? trunc_optab : sext_optab;
+	}
       else if (GET_MODE_PRECISION (from_mode) < GET_MODE_PRECISION (to_mode))
 	tab = sext_optab;
       else
@@ -392,7 +400,7 @@ convert_mode_scalar (rtx to, rtx from, int unsignedp)
 		 BFmode -> SFmode -> HFmode conversion where SFmode
 		 has superset of BFmode values.  We don't need
 		 to handle sNaNs by raising exception and turning
-		 into into qNaN though, as that can be done in the
+		 it into qNaN though, as that can be done in the
 		 SFmode -> HFmode conversion too.  */
 	      rtx temp = gen_reg_rtx (SFmode);
 	      int save_flag_finite_math_only = flag_finite_math_only;
@@ -5466,6 +5474,7 @@ emit_push_insn (rtx x, machine_mode mode, tree type, rtx size,
 	  /* If source is a constant VAR_DECL with a simple constructor,
              store the constructor to the stack instead of moving it.  */
 	  const_tree decl;
+	  HOST_WIDE_INT sz;
 	  if (partial == 0
 	      && MEM_P (xinner)
 	      && SYMBOL_REF_P (XEXP (xinner, 0))
@@ -5473,9 +5482,11 @@ emit_push_insn (rtx x, machine_mode mode, tree type, rtx size,
 	      && VAR_P (decl)
 	      && TREE_READONLY (decl)
 	      && !TREE_SIDE_EFFECTS (decl)
-	      && immediate_const_ctor_p (DECL_INITIAL (decl), 2))
-	    store_constructor (DECL_INITIAL (decl), target, 0,
-			       int_expr_size (DECL_INITIAL (decl)), false);
+	      && immediate_const_ctor_p (DECL_INITIAL (decl), 2)
+	      && (sz = int_expr_size (DECL_INITIAL (decl))) > 0
+	      && CONST_INT_P (size)
+	      && INTVAL (size) == sz)
+	    store_constructor (DECL_INITIAL (decl), target, 0, sz, false);
 	  else
 	    emit_block_move (target, xinner, size, BLOCK_OP_CALL_PARM);
 	}
@@ -7879,8 +7890,8 @@ store_constructor (tree exp, rtx target, int cleared, poly_int64 size,
 	    auto nunits = TYPE_VECTOR_SUBPARTS (type).to_constant ();
 	    if (maybe_ne (GET_MODE_PRECISION (mode), nunits))
 	      tmp = expand_binop (mode, and_optab, tmp,
-				  GEN_INT ((1 << nunits) - 1), target,
-				  true, OPTAB_WIDEN);
+				  GEN_INT ((HOST_WIDE_INT_1U << nunits) - 1),
+				  target, true, OPTAB_WIDEN);
 	    if (tmp != target)
 	      emit_move_insn (target, tmp);
 	    break;
@@ -10259,12 +10270,12 @@ expand_expr_real_2 (sepops ops, rtx target, machine_mode tmode,
 					  &algorithm, &variant, cost)
 		  : cost < mul_cost (speed, mode))
 		{
-		  target = bit0_p ? expand_and (mode, negate_rtx (mode, op0),
-						op1, target)
-				  : expand_and (mode, op0,
-						negate_rtx (mode, op1),
-						target);
-		  return REDUCE_BIT_FIELD (target);
+		  temp = bit0_p ? expand_and (mode, negate_rtx (mode, op0),
+					      op1, target)
+				: expand_and (mode, op0,
+					      negate_rtx (mode, op1),
+					      target);
+		  return REDUCE_BIT_FIELD (temp);
 		}
 	    }
 	}
@@ -12350,7 +12361,8 @@ expand_expr_real_1 (tree exp, rtx target, machine_mode tmode,
 	    return expand_builtin (exp, target, subtarget, tmode, ignore);
 	  }
       }
-      return expand_call (exp, target, ignore);
+      temp = expand_call (exp, target, ignore);
+      return EXTEND_BITINT (temp);
 
     case VIEW_CONVERT_EXPR:
       op0 = NULL_RTX;
@@ -12445,7 +12457,10 @@ expand_expr_real_1 (tree exp, rtx target, machine_mode tmode,
 	    }
 	}
       /* If both types are integral, convert from one mode to the other.  */
-      else if (INTEGRAL_TYPE_P (type) && INTEGRAL_TYPE_P (TREE_TYPE (treeop0)))
+      else if (INTEGRAL_TYPE_P (type)
+	       && INTEGRAL_TYPE_P (TREE_TYPE (treeop0))
+	       && mode != BLKmode
+	       && GET_MODE (op0) != BLKmode)
 	op0 = convert_modes (mode, GET_MODE (op0), op0,
 			     TYPE_UNSIGNED (TREE_TYPE (treeop0)));
       /* If the output type is a bit-field type, do an extraction.  */
@@ -13502,6 +13517,7 @@ do_store_flag (sepops ops, rtx target, machine_mode mode)
   rtx op0, op1;
   rtx subtarget = target;
   location_t loc = ops->location;
+  unsigned HOST_WIDE_INT nunits;
 
   arg0 = ops->op0;
   arg1 = ops->op1;
@@ -13693,6 +13709,22 @@ do_store_flag (sepops ops, rtx target, machine_mode mode)
     subtarget = 0;
 
   expand_operands (arg0, arg1, subtarget, &op0, &op1, EXPAND_NORMAL);
+
+  /* For boolean vectors with less than mode precision
+     make sure to fill padding with consistent values.  */
+  if (VECTOR_BOOLEAN_TYPE_P (type)
+      && SCALAR_INT_MODE_P (operand_mode)
+      && TYPE_VECTOR_SUBPARTS (type).is_constant (&nunits)
+      && maybe_ne (GET_MODE_PRECISION (operand_mode), nunits))
+    {
+      gcc_assert (code == EQ || code == NE);
+      op0 = expand_binop (mode, and_optab, op0,
+			  GEN_INT ((HOST_WIDE_INT_1U << nunits) - 1),
+			  NULL_RTX, true, OPTAB_WIDEN);
+      op1 = expand_binop (mode, and_optab, op1,
+			  GEN_INT ((HOST_WIDE_INT_1U << nunits) - 1),
+			  NULL_RTX, true, OPTAB_WIDEN);
+    }
 
   if (target == 0)
     target = gen_reg_rtx (mode);

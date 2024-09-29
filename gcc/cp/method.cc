@@ -2760,6 +2760,7 @@ synthesized_method_walk (tree ctype, special_function_kind sfk, bool const_p,
 	return;
     }
 
+  bool push_to_top = maybe_push_to_top_level (TYPE_NAME (ctype));
   ++cp_unevaluated_operand;
   ++c_inhibit_evaluation_warnings;
   push_deferring_access_checks (dk_no_deferred);
@@ -2857,6 +2858,7 @@ synthesized_method_walk (tree ctype, special_function_kind sfk, bool const_p,
   pop_deferring_access_checks ();
   --cp_unevaluated_operand;
   --c_inhibit_evaluation_warnings;
+  maybe_pop_from_top_level (push_to_top);
 }
 
 /* DECL is a defaulted function whose exception specification is now
@@ -3305,8 +3307,11 @@ implicitly_declare_fn (special_function_kind kind, tree type,
       /* Copy constexpr from the inherited constructor even if the
 	 inheriting constructor doesn't satisfy the requirements.  */
       constexpr_p = DECL_DECLARED_CONSTEXPR_P (inherited_ctor);
+      tree inherited_ctor_fn = STRIP_TEMPLATE (inherited_ctor);
       /* Also copy any attributes.  */
-      DECL_ATTRIBUTES (fn) = clone_attrs (DECL_ATTRIBUTES (inherited_ctor));
+      DECL_ATTRIBUTES (fn) = clone_attrs (DECL_ATTRIBUTES (inherited_ctor_fn));
+      DECL_DISREGARD_INLINE_LIMITS (fn)
+	= DECL_DISREGARD_INLINE_LIMITS (inherited_ctor_fn);
     }
 
   /* Add the "this" parameter.  */

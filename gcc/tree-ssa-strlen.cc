@@ -2341,6 +2341,8 @@ strlen_pass::handle_builtin_strlen ()
 		  wide_int min = wi::to_wide (old);
 		  wide_int max
 		    = wi::to_wide (TYPE_MAX_VALUE (ptrdiff_type_node)) - 2;
+		  if (wi::gtu_p (min, max))
+		    max = wi::to_wide (TYPE_MAX_VALUE (TREE_TYPE (lhs)));
 		  set_strlen_range (lhs, min, max);
 		}
 	      else
@@ -4827,7 +4829,7 @@ strlen_pass::count_nonzero_bytes_addr (tree exp, tree vuse, gimple *stmt,
       if (maxlen + 1 < nbytes)
 	return false;
 
-      if (nbytes <= minlen)
+      if (nbytes <= minlen || !si->full_string_p)
 	*nulterm = false;
 
       if (nbytes < minlen)
@@ -4836,6 +4838,9 @@ strlen_pass::count_nonzero_bytes_addr (tree exp, tree vuse, gimple *stmt,
 	  if (nbytes < maxlen)
 	    maxlen = nbytes;
 	}
+
+      if (!si->full_string_p)
+	maxlen = nbytes;
 
       if (minlen < lenrange[0])
 	lenrange[0] = minlen;

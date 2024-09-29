@@ -50,7 +50,7 @@ import dmd.rootobject;
 import dmd.root.utf;
 import dmd.statement;
 import dmd.tokens;
-import dmd.typesem : mutableOf;
+import dmd.typesem : mutableOf, equivalent, pointerTo, sarrayOf, arrayOf;
 import dmd.utils : arrayCastBigEndian;
 import dmd.visitor;
 
@@ -63,7 +63,7 @@ import dmd.visitor;
  * functions and may invoke a function that contains `ErrorStatement` in its body.
  * If that, the "CTFE failed because of previous errors" error is raised.
  */
-extern(C++) public Expression ctfeInterpret(Expression e)
+public Expression ctfeInterpret(Expression e)
 {
     switch (e.op)
     {
@@ -3787,7 +3787,7 @@ public:
             if (v is v2 || !v.isOverlappedWith(v2))
                 continue;
             auto e = (*sle.elements)[i];
-            if (e.op != EXP.void_)
+            if (e !is null && e.op != EXP.void_)
                 (*sle.elements)[i] = voidInitLiteral(e.type, v).copy();
         }
     }
@@ -6118,7 +6118,7 @@ public:
                     return;
                 }
 
-                auto str = arrayCastBigEndian((cast(const ubyte[]) se.peekString()), sz);
+                auto str = arrayCastBigEndian(se.peekData(), sz);
                 emplaceExp!(StringExp)(pue, e1.loc, str, se.len / sz, cast(ubyte) sz);
                 result = pue.exp();
                 result.type = e.to;

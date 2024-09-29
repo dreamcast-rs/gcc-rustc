@@ -498,6 +498,23 @@ static const struct riscv_tune_param thead_c906_tune_info = {
   NULL,						/* vector cost */
 };
 
+/* Costs to use when optimizing for xiangshan nanhu.  */
+static const struct riscv_tune_param xiangshan_nanhu_tune_info = {
+  {COSTS_N_INSNS (3), COSTS_N_INSNS (3)},	/* fp_add */
+  {COSTS_N_INSNS (3), COSTS_N_INSNS (3)},	/* fp_mul */
+  {COSTS_N_INSNS (10), COSTS_N_INSNS (20)},	/* fp_div */
+  {COSTS_N_INSNS (3), COSTS_N_INSNS (3)},	/* int_mul */
+  {COSTS_N_INSNS (6), COSTS_N_INSNS (6)},	/* int_div */
+  6,						/* issue_rate */
+  3,						/* branch_cost */
+  3,						/* memory_cost */
+  3,						/* fmv_cost */
+  true,						/* slow_unaligned_access */
+  false,					/* use_divmod_expansion */
+  RISCV_FUSE_ZEXTW | RISCV_FUSE_ZEXTH,          /* fusible_ops */
+  NULL,						/* vector cost */
+};
+
 /* Costs to use when optimizing for a generic ooo profile.  */
 static const struct riscv_tune_param generic_ooo_tune_info = {
   {COSTS_N_INSNS (2), COSTS_N_INSNS (2)},	/* fp_add */
@@ -535,26 +552,76 @@ static const struct riscv_tune_param optimize_size_tune_info = {
 static bool riscv_avoid_shrink_wrapping_separate ();
 static tree riscv_handle_fndecl_attribute (tree *, tree, tree, int, bool *);
 static tree riscv_handle_type_attribute (tree *, tree, tree, int, bool *);
+static tree riscv_handle_rvv_vector_bits_attribute (tree *, tree, tree, int,
+						    bool *);
 
 /* Defining target-specific uses of __attribute__.  */
-TARGET_GNU_ATTRIBUTES (riscv_attribute_table,
+static const attribute_spec riscv_gnu_attributes[] =
 {
   /* Syntax: { name, min_len, max_len, decl_required, type_required,
 	       function_type_required, affects_type_identity, handler,
 	       exclude } */
 
   /* The attribute telling no prologue/epilogue.  */
-  { "naked",	0,  0, true, false, false, false,
-    riscv_handle_fndecl_attribute, NULL },
+  {"naked", 0, 0, true, false, false, false, riscv_handle_fndecl_attribute,
+   NULL},
   /* This attribute generates prologue/epilogue for interrupt handlers.  */
-  { "interrupt", 0, 1, false, true, true, false,
-    riscv_handle_type_attribute, NULL },
+  {"interrupt", 0, 1, false, true, true, false, riscv_handle_type_attribute,
+   NULL},
 
   /* The following two are used for the built-in properties of the Vector type
      and are not used externally */
   {"RVV sizeless type", 4, 4, false, true, false, true, NULL, NULL},
-  {"RVV type", 0, 0, false, true, false, true, NULL, NULL}
-});
+  {"RVV type", 0, 0, false, true, false, true, NULL, NULL},
+  /* This attribute is used to declare a function, forcing it to use the
+    standard vector calling convention variant. Syntax:
+    __attribute__((riscv_vector_cc)). */
+  {"riscv_vector_cc", 0, 0, false, true, true, true, NULL, NULL},
+  /* This attribute is used to declare a new type, to appoint the exactly
+     bits size of the type.  For example:
+
+     typedef vint8m1_t f_vint8m1_t __attribute__((riscv_rvv_vector_bits(256)));
+
+     The new created type f_vint8m1_t will be exactly 256 bits.  It can be
+     be used in globals, structs, unions, and arrays instead of sizeless
+     types.  */
+  {"riscv_rvv_vector_bits", 1, 1, false, true, false, true,
+   riscv_handle_rvv_vector_bits_attribute, NULL},
+};
+
+static const scoped_attribute_specs riscv_gnu_attribute_table  =
+{
+  "gnu", {riscv_gnu_attributes}
+};
+
+static const attribute_spec riscv_attributes[] =
+{
+  /* This attribute is used to declare a function, forcing it to use the
+     standard vector calling convention variant. Syntax:
+     [[riscv::vector_cc]]. */
+  {"vector_cc", 0, 0, false, true, true, true, NULL, NULL},
+  /* This attribute is used to declare a new type, to appoint the exactly
+     bits size of the type.  For example:
+
+     typedef vint8m1_t f_vint8m1_t __attribute__((riscv_rvv_vector_bits(256)));
+
+     The new created type f_vint8m1_t will be exactly 256 bits.  It can be
+     be used in globals, structs, unions, and arrays instead of sizeless
+     types.  */
+  {"rvv_vector_bits", 1, 1, false, true, false, true,
+   riscv_handle_rvv_vector_bits_attribute, NULL},
+};
+
+static const scoped_attribute_specs riscv_nongnu_attribute_table =
+{
+  "riscv", {riscv_attributes}
+};
+
+static const scoped_attribute_specs *const riscv_attribute_table[] =
+{
+  &riscv_gnu_attribute_table,
+  &riscv_nongnu_attribute_table
+};
 
 /* Order for the CLOBBERs/USEs of gpr_save.  */
 static const unsigned gpr_save_reg_order[] = {
@@ -612,6 +679,15 @@ static unsigned int
 riscv_min_arithmetic_precision (void)
 {
   return 32;
+}
+
+/* Get the arch string from an options object.  */
+
+template <class T>
+static const char *
+get_arch_str (const T *opts)
+{
+  return opts->x_riscv_arch_string;
 }
 
 template <class T>
@@ -1005,6 +1081,7 @@ static int riscv_symbol_insns (enum riscv_symbol_type type)
     case SYMBOL_ABSOLUTE: return 2; /* LUI + the reference.  */
     case SYMBOL_PCREL: return 2; /* AUIPC + the reference.  */
     case SYMBOL_TLS_LE: return 3; /* LUI + ADD TP + the reference.  */
+    case SYMBOL_TLSDESC: return 6; /* 4-instruction call + ADD TP + the reference.  */
     case SYMBOL_GOT_DISP: return 3; /* AUIPC + LD GOT + the reference.  */
     case SYMBOL_FORCE_TO_MEM: return 3; /* AUIPC + LD + the reference.  */
     default: gcc_unreachable ();
@@ -1329,7 +1406,9 @@ riscv_valid_lo_sum_p (enum riscv_symbol_type sym_type, machine_mode mode,
       align = (SYMBOL_REF_DECL (x)
 	       ? DECL_ALIGN (SYMBOL_REF_DECL (x))
 	       : 1);
-      size = (SYMBOL_REF_DECL (x) && DECL_SIZE (SYMBOL_REF_DECL (x))
+      size = (SYMBOL_REF_DECL (x)
+	      && DECL_SIZE (SYMBOL_REF_DECL (x))
+	      && tree_fits_uhwi_p (DECL_SIZE (SYMBOL_REF_DECL (x)))
 	      ? tree_to_uhwi (DECL_SIZE (SYMBOL_REF_DECL (x)))
 	      : 2*BITS_PER_WORD);
     }
@@ -1499,10 +1578,6 @@ riscv_v_adjust_bytesize (machine_mode mode, int scale)
 	return BYTES_PER_RISCV_VECTOR;
 
       poly_int64 nunits = GET_MODE_NUNITS (mode);
-      poly_int64 mode_size = GET_MODE_SIZE (mode);
-
-      if (maybe_eq (mode_size, (uint16_t) -1))
-	mode_size = riscv_vector_chunks * scale;
 
       if (nunits.coeffs[0] > 8)
 	return exact_div (nunits, 8);
@@ -2157,7 +2232,7 @@ riscv_call_tls_get_addr (rtx sym, rtx result)
 static rtx
 riscv_legitimize_tls_address (rtx loc)
 {
-  rtx dest, tp, tmp;
+  rtx dest, tp, tmp, a0;
   enum tls_model model = SYMBOL_REF_TLS_MODEL (loc);
 
 #if 0
@@ -2173,9 +2248,24 @@ riscv_legitimize_tls_address (rtx loc)
       /* Rely on section anchors for the optimization that LDM TLS
 	 provides.  The anchor's address is loaded with GD TLS. */
     case TLS_MODEL_GLOBAL_DYNAMIC:
-      tmp = gen_rtx_REG (Pmode, GP_RETURN);
-      dest = gen_reg_rtx (Pmode);
-      emit_libcall_block (riscv_call_tls_get_addr (loc, tmp), dest, tmp, loc);
+      if (TARGET_TLSDESC)
+	{
+	  static unsigned seqno;
+	  tp = gen_rtx_REG (Pmode, THREAD_POINTER_REGNUM);
+	  a0 = gen_rtx_REG (Pmode, GP_ARG_FIRST);
+	  dest = gen_reg_rtx (Pmode);
+
+	  emit_insn (gen_tlsdesc (Pmode, loc, GEN_INT (seqno)));
+	  emit_insn (gen_add3_insn (dest, a0, tp));
+	  seqno++;
+	}
+      else
+	{
+	  tmp = gen_rtx_REG (Pmode, GP_RETURN);
+	  dest = gen_reg_rtx (Pmode);
+	  emit_libcall_block (riscv_call_tls_get_addr (loc, tmp), dest, tmp,
+			      loc);
+	}
       break;
 
     case TLS_MODEL_INITIAL_EXEC:
@@ -2707,6 +2797,45 @@ riscv_v_adjust_scalable_frame (rtx target, poly_int64 offset, bool epilogue)
   REG_NOTES (insn) = dwarf;
 }
 
+/* Take care below subreg const_poly_int move:
+
+   1. (set (subreg:DI (reg:TI 237) 8)
+	   (subreg:DI (const_poly_int:TI [4, 2]) 8))
+      =>
+      (set (subreg:DI (reg:TI 237) 8)
+	   (const_int 0)) */
+
+static bool
+riscv_legitimize_subreg_const_poly_move (machine_mode mode, rtx dest, rtx src)
+{
+  gcc_assert (SUBREG_P (src) && CONST_POLY_INT_P (SUBREG_REG (src)));
+  gcc_assert (SUBREG_BYTE (src).is_constant ());
+
+  int byte_offset = SUBREG_BYTE (src).to_constant ();
+  rtx const_poly = SUBREG_REG (src);
+  machine_mode subreg_mode = GET_MODE (const_poly);
+
+  if (subreg_mode != TImode) /* Only TImode is needed for now.  */
+    return false;
+
+  if (byte_offset == 8)
+    {
+      /* The const_poly_int cannot exceed int64, just set zero here.  */
+      emit_move_insn (dest, CONST0_RTX (mode));
+      return true;
+    }
+
+  /* The below transform will be covered in somewhere else.
+     Thus, ignore this here.
+     (set (subreg:DI (reg:TI 237) 0)
+	  (subreg:DI (const_poly_int:TI [4, 2]) 0))
+     =>
+     (set (subreg:DI (reg:TI 237) 0)
+	  (const_poly_int:DI [4, 2])) */
+
+  return false;
+}
+
 /* If (set DEST SRC) is not a valid move instruction, emit an equivalent
    sequence that is valid.  */
 
@@ -2760,6 +2889,11 @@ riscv_legitimize_move (machine_mode mode, rtx dest, rtx src)
 	}
       return true;
     }
+
+  if (SUBREG_P (src) && CONST_POLY_INT_P (SUBREG_REG (src))
+    && riscv_legitimize_subreg_const_poly_move (mode, dest, src))
+    return true;
+
   /* Expand
        (set (reg:DI target) (subreg:DI (reg:V8QI reg) 0))
      Expand this data movement instead of simply forbid it since
@@ -3464,7 +3598,7 @@ riscv_rtx_costs (rtx x, machine_mode mode, int outer_code, int opno ATTRIBUTE_UN
     case MULT:
       if (float_mode_p)
 	*total = tune_param->fp_mul[mode == DFmode];
-      else if (!TARGET_MUL)
+      else if (!(TARGET_MUL || TARGET_ZMMUL))
 	/* Estimate the cost of a library call.  */
 	*total = COSTS_N_INSNS (speed ? 32 : 6);
       else if (GET_MODE_SIZE (mode).to_constant () > UNITS_PER_WORD)
@@ -4605,12 +4739,11 @@ riscv_expand_conditional_move (rtx dest, rtx op, rtx cons, rtx alt)
       /* reg, reg  */
       else if (REG_P (cons) && REG_P (alt))
 	{
-	  if ((code == EQ && rtx_equal_p (cons, op0))
+	  if (((code == EQ && rtx_equal_p (cons, op0))
 	       || (code == NE && rtx_equal_p (alt, op0)))
+	      && op1 == CONST0_RTX (mode))
 	    {
 	      rtx cond = gen_rtx_fmt_ee (code, GET_MODE (op0), op0, op1);
-	      if (!rtx_equal_p (cons, op0))
-		std::swap (alt, cons);
 	      alt = force_reg (mode, alt);
 	      emit_insn (gen_rtx_SET (dest,
 				      gen_rtx_IF_THEN_ELSE (mode, cond,
@@ -4632,7 +4765,7 @@ riscv_expand_conditional_move (rtx dest, rtx op, rtx cons, rtx alt)
 				  gen_rtx_IF_THEN_ELSE (mode, cond1,
 							CONST0_RTX (mode),
 							alt)));
-	  riscv_emit_binary (IOR, dest, reg1, reg2);
+	  riscv_emit_binary (PLUS, dest, reg1, reg2);
 	  return true;
 	}
     }
@@ -5356,7 +5489,8 @@ riscv_setup_incoming_varargs (cumulative_args_t cum,
      argument.  Advance a local copy of CUM past the last "real" named
      argument, to find out how many registers are left over.  */
   local_cum = *get_cumulative_args (cum);
-  if (!TYPE_NO_NAMED_ARGS_STDARG_P (TREE_TYPE (current_function_decl)))
+  if (!TYPE_NO_NAMED_ARGS_STDARG_P (TREE_TYPE (current_function_decl))
+      || arg.type != NULL_TREE)
     riscv_function_arg_advance (pack_cumulative_args (&local_cum), arg);
 
   /* Found out how many registers we need to save.  */
@@ -5397,6 +5531,152 @@ riscv_v_abi ()
   return v_abi;
 }
 
+static bool
+riscv_vector_int_type_p (const_tree type)
+{
+  machine_mode mode = TYPE_MODE (type);
+
+  if (VECTOR_MODE_P (mode))
+    return INTEGRAL_MODE_P (GET_MODE_INNER (mode));
+
+  const char *name = IDENTIFIER_POINTER (DECL_NAME (TYPE_NAME (type)));
+  return strstr (name, "int") != NULL || strstr (name, "uint") != NULL;
+}
+
+static bool
+riscv_vector_float_type_p (const_tree type)
+{
+  machine_mode mode = TYPE_MODE (type);
+
+  if (VECTOR_MODE_P (mode))
+    return FLOAT_MODE_P (GET_MODE_INNER (mode));
+
+  const char *name = IDENTIFIER_POINTER (DECL_NAME (TYPE_NAME (type)));
+  return strstr (name, "vfloat") != NULL;
+}
+
+static int
+riscv_vector_element_bitsize (const_tree type)
+{
+  machine_mode mode = TYPE_MODE (type);
+
+  if (VECTOR_MODE_P (mode))
+    return GET_MODE_BITSIZE (GET_MODE_INNER (mode));
+
+  const char *name = IDENTIFIER_POINTER (DECL_NAME (TYPE_NAME (type)));
+
+  if (strstr (name, "bool") != NULL)
+    return 1;
+  else if (strstr (name, "int8") != NULL)
+    return 8;
+  else if (strstr (name, "int16") != NULL || strstr (name, "float16") != NULL)
+    return 16;
+  else if (strstr (name, "int32") != NULL || strstr (name, "float32") != NULL)
+    return 32;
+  else if (strstr (name, "int64") != NULL || strstr (name, "float64") != NULL)
+    return 64;
+
+  gcc_unreachable ();
+}
+
+static int
+riscv_vector_required_min_vlen (const_tree type)
+{
+  machine_mode mode = TYPE_MODE (type);
+
+  if (riscv_v_ext_mode_p (mode))
+    return TARGET_MIN_VLEN;
+
+  int element_bitsize = riscv_vector_element_bitsize (type);
+  const char *name = IDENTIFIER_POINTER (DECL_NAME (TYPE_NAME (type)));
+
+  if (strstr (name, "bool64") != NULL)
+    return element_bitsize * 64;
+  else if (strstr (name, "bool32") != NULL)
+    return element_bitsize * 32;
+  else if (strstr (name, "bool16") != NULL)
+    return element_bitsize * 16;
+  else if (strstr (name, "bool8") != NULL)
+    return element_bitsize * 8;
+  else if (strstr (name, "bool4") != NULL)
+    return element_bitsize * 4;
+  else if (strstr (name, "bool2") != NULL)
+    return element_bitsize * 2;
+
+  if (strstr (name, "mf8") != NULL)
+    return element_bitsize * 8;
+  else if (strstr (name, "mf4") != NULL)
+    return element_bitsize * 4;
+  else if (strstr (name, "mf2") != NULL)
+    return element_bitsize * 2;
+
+  return element_bitsize;
+}
+
+static void
+riscv_validate_vector_type (const_tree type, const char *hint)
+{
+  gcc_assert (riscv_vector_type_p (type));
+
+  if (!TARGET_VECTOR)
+    {
+      error_at (input_location, "%s %qT requires the V ISA extension",
+		hint, type);
+      return;
+    }
+
+  int element_bitsize = riscv_vector_element_bitsize (type);
+  bool int_type_p = riscv_vector_int_type_p (type);
+
+  if (int_type_p && element_bitsize == 64
+    && !TARGET_VECTOR_ELEN_64_P (riscv_vector_elen_flags))
+    {
+      error_at (input_location,
+		"%s %qT requires the zve64x, zve64f, zve64d or v ISA extension",
+		hint, type);
+      return;
+    }
+
+  bool float_type_p = riscv_vector_float_type_p (type);
+
+  if (float_type_p && element_bitsize == 16
+    && !TARGET_VECTOR_ELEN_FP_16_P (riscv_vector_elen_flags))
+    {
+      error_at (input_location,
+		"%s %qT requires the zvfhmin or zvfh ISA extension",
+		hint, type);
+      return;
+    }
+
+  if (float_type_p && element_bitsize == 32
+    && !TARGET_VECTOR_ELEN_FP_32_P (riscv_vector_elen_flags))
+    {
+      error_at (input_location,
+		"%s %qT requires the zve32f, zve64f, zve64d or v ISA extension",
+		hint, type);
+      return;
+    }
+
+  if (float_type_p && element_bitsize == 64
+    && !TARGET_VECTOR_ELEN_FP_64_P (riscv_vector_elen_flags))
+    {
+      error_at (input_location,
+		"%s %qT requires the zve64d or v ISA extension", hint, type);
+      return;
+    }
+
+  int required_min_vlen = riscv_vector_required_min_vlen (type);
+
+  if (TARGET_MIN_VLEN < required_min_vlen)
+    {
+      error_at (
+	input_location,
+	"%s %qT requires the minimal vector length %qd but %qd is given",
+	hint, type, required_min_vlen, TARGET_MIN_VLEN);
+      return;
+    }
+}
+
 /* Return true if a function with type FNTYPE returns its value in
    RISC-V V registers.  */
 
@@ -5405,7 +5685,13 @@ riscv_return_value_is_vector_type_p (const_tree fntype)
 {
   tree return_type = TREE_TYPE (fntype);
 
-  return riscv_vector_type_p (return_type);
+  if (riscv_vector_type_p (return_type))
+    {
+      riscv_validate_vector_type (return_type, "return type");
+      return true;
+    }
+  else
+    return false;
 }
 
 /* Return true if a function with type FNTYPE takes arguments in
@@ -5419,10 +5705,31 @@ riscv_arguments_is_vector_type_p (const_tree fntype)
     {
       tree arg_type = TREE_VALUE (chain);
       if (riscv_vector_type_p (arg_type))
-	return true;
+	{
+	  riscv_validate_vector_type (arg_type, "argument type");
+	  return true;
+	}
     }
 
   return false;
+}
+
+/* Return true if FUNC is a riscv_vector_cc function.
+   For more details please reference the below link.
+   https://github.com/riscv-non-isa/riscv-c-api-doc/pull/67 */
+static bool
+riscv_vector_cc_function_p (const_tree fntype)
+{
+  tree attr = TYPE_ATTRIBUTES (fntype);
+  bool vector_cc_p = lookup_attribute ("vector_cc", attr) != NULL_TREE
+    || lookup_attribute ("riscv_vector_cc", attr) != NULL_TREE;
+
+  if (vector_cc_p && !TARGET_VECTOR)
+    error_at (input_location,
+	      "function attribute %qs requires the V ISA extension",
+	      "riscv_vector_cc");
+
+  return vector_cc_p;
 }
 
 /* Implement TARGET_FNTYPE_ABI.  */
@@ -5434,7 +5741,8 @@ riscv_fntype_abi (const_tree fntype)
      reference the below link.
      https://github.com/riscv-non-isa/riscv-elf-psabi-doc/pull/389  */
   if (riscv_return_value_is_vector_type_p (fntype)
-	  || riscv_arguments_is_vector_type_p (fntype))
+	  || riscv_arguments_is_vector_type_p (fntype)
+	  || riscv_vector_cc_function_p (fntype))
     return riscv_v_abi ();
 
   return default_function_abi;
@@ -5518,6 +5826,67 @@ riscv_handle_type_attribute (tree *node ATTRIBUTE_UNUSED, tree name, tree args,
 	    }
 	}
     }
+
+  return NULL_TREE;
+}
+
+static tree
+riscv_handle_rvv_vector_bits_attribute (tree *node, tree name, tree args,
+					ATTRIBUTE_UNUSED int flags,
+					bool *no_add_attrs)
+{
+  if (!is_attribute_p ("riscv_rvv_vector_bits", name))
+    return NULL_TREE;
+
+  *no_add_attrs = true;
+
+  if (rvv_vector_bits != RVV_VECTOR_BITS_ZVL)
+    {
+      error (
+	"%qs is only supported when %<-mrvv-vector-bits=zvl%> is specified",
+	"riscv_rvv_vector_bits");
+      return NULL_TREE;
+    }
+
+  tree type = *node;
+
+  if (!VECTOR_TYPE_P (type) || !riscv_vector::builtin_type_p (type))
+    {
+      error ("%qs applied to non-RVV type %qT", "riscv_rvv_vector_bits", type);
+      return NULL_TREE;
+    }
+
+  tree size = TREE_VALUE (args);
+
+  if (TREE_CODE (size) != INTEGER_CST)
+    {
+      error ("%qs requires an integer constant", "riscv_rvv_vector_bits");
+      return NULL_TREE;
+    }
+
+  unsigned HOST_WIDE_INT args_in_bits = tree_to_uhwi (size);
+  unsigned HOST_WIDE_INT type_mode_bits
+    = GET_MODE_PRECISION (TYPE_MODE (type)).to_constant ();
+
+  if (args_in_bits != type_mode_bits)
+    {
+      error ("invalid RVV vector size %qd, "
+	     "expected size is %qd based on LMUL of type and %qs",
+	     (int)args_in_bits, (int)type_mode_bits, "-mrvv-vector-bits=zvl");
+      return NULL_TREE;
+    }
+
+  type = build_distinct_type_copy (type);
+  TYPE_ATTRIBUTES (type)
+    = remove_attribute ("RVV sizeless type",
+			copy_list (TYPE_ATTRIBUTES (type)));
+
+  /* The operations like alu/cmp on vbool*_t is not well defined,
+     continue to treat vbool*_t as indivisible.  */
+  if (!VECTOR_BOOLEAN_TYPE_P (type))
+    TYPE_INDIVISIBLE_P (type) = 0;
+
+  *node = type;
 
   return NULL_TREE;
 }
@@ -7314,7 +7683,15 @@ riscv_expand_prologue (void)
       /* Second step for constant frame.  */
       HOST_WIDE_INT constant_frame = remaining_size.to_constant ();
       if (constant_frame == 0)
-	return;
+	{
+	  /* We must have allocated stack space for the scalable frame.
+	     Emit a stack tie if we have a frame pointer so that the
+	     allocation is ordered WRT fp setup and subsequent writes
+	     into the frame.  */
+	  if (frame_pointer_needed)
+	    riscv_emit_stack_tie ();
+	  return;
+	}
 
       if (SMALL_OPERAND (-constant_frame))
 	{
@@ -7334,6 +7711,13 @@ riscv_expand_prologue (void)
 	  insn = gen_rtx_SET (stack_pointer_rtx, insn);
 	  riscv_set_frame_expr (insn);
 	}
+
+      /* We must have allocated the remainder of the stack frame.
+	 Emit a stack tie if we have a frame pointer so that the
+	 allocation is ordered WRT fp setup and subsequent writes
+	 into the frame.  */
+      if (frame_pointer_needed)
+	riscv_emit_stack_tie ();
     }
 }
 
@@ -7387,52 +7771,6 @@ riscv_adjust_libcall_cfi_epilogue ()
   return dwarf;
 }
 
-/* return true if popretz pattern can be matched.
-   set (reg 10 a0) (const_int 0)
-   use (reg 10 a0)
-   NOTE_INSN_EPILOGUE_BEG  */
-static rtx_insn *
-riscv_zcmp_can_use_popretz (void)
-{
-  rtx_insn *insn = NULL, *use = NULL, *clear = NULL;
-
-  /* sequence stack for NOTE_INSN_EPILOGUE_BEG*/
-  struct sequence_stack *outer_seq = get_current_sequence ()->next;
-  if (!outer_seq)
-    return NULL;
-  insn = outer_seq->first;
-  if (!insn || !NOTE_P (insn) || NOTE_KIND (insn) != NOTE_INSN_EPILOGUE_BEG)
-    return NULL;
-
-  /* sequence stack for the insn before NOTE_INSN_EPILOGUE_BEG*/
-  outer_seq = outer_seq->next;
-  if (outer_seq)
-    insn = outer_seq->last;
-
-  /* skip notes  */
-  while (insn && NOTE_P (insn))
-    {
-      insn = PREV_INSN (insn);
-    }
-  use = insn;
-
-  /* match use (reg 10 a0)  */
-  if (use == NULL || !INSN_P (use) || GET_CODE (PATTERN (use)) != USE
-      || !REG_P (XEXP (PATTERN (use), 0))
-      || REGNO (XEXP (PATTERN (use), 0)) != A0_REGNUM)
-    return NULL;
-
-  /* match set (reg 10 a0) (const_int 0 [0])  */
-  clear = PREV_INSN (use);
-  if (clear != NULL && INSN_P (clear) && GET_CODE (PATTERN (clear)) == SET
-      && REG_P (SET_DEST (PATTERN (clear)))
-      && REGNO (SET_DEST (PATTERN (clear))) == A0_REGNUM
-      && SET_SRC (PATTERN (clear)) == const0_rtx)
-    return clear;
-
-  return NULL;
-}
-
 static void
 riscv_gen_multi_pop_insn (bool use_multi_pop_normal, unsigned mask,
 			  unsigned multipop_size)
@@ -7443,13 +7781,6 @@ riscv_gen_multi_pop_insn (bool use_multi_pop_normal, unsigned mask,
   if (!use_multi_pop_normal)
     insn = emit_insn (
       riscv_gen_multi_push_pop_insn (POP_IDX, multipop_size, regs_count));
-  else if (rtx_insn *clear_a0_insn = riscv_zcmp_can_use_popretz ())
-    {
-      delete_insn (NEXT_INSN (clear_a0_insn));
-      delete_insn (clear_a0_insn);
-      insn = emit_jump_insn (
-	riscv_gen_multi_push_pop_insn (POPRETZ_IDX, multipop_size, regs_count));
-    }
   else
     insn = emit_jump_insn (
       riscv_gen_multi_push_pop_insn (POPRET_IDX, multipop_size, regs_count));
@@ -8269,9 +8600,7 @@ riscv_sched_variable_issue (FILE *, int, rtx_insn *insn, int more)
 
   /* If we ever encounter an insn without an insn reservation, trip
      an assert so we can find and fix this problem.  */
-#if 0
   gcc_assert (insn_has_dfa_reservation_p (insn));
-#endif
 
   return more - 1;
 }
@@ -8434,7 +8763,7 @@ riscv_macro_fusion_pair_p (rtx_insn *prev, rtx_insn *curr)
 				(lo_sum:DI (reg:DI rD) (const_int IMM12))) */
 
       if (GET_CODE (SET_SRC (prev_set)) == UNSPEC
-	  && XINT (prev_set, 1) == UNSPEC_AUIPC
+	  && XINT (SET_SRC (prev_set), 1) == UNSPEC_AUIPC
 	  && (GET_CODE (SET_SRC (curr_set)) == LO_SUM
 	      || (GET_CODE (SET_SRC (curr_set)) == PLUS
 		  && SMALL_OPERAND (INTVAL (XEXP (SET_SRC (curr_set), 1))))))
@@ -8642,13 +8971,17 @@ riscv_declare_function_name (FILE *stream, const char *name, tree fndecl)
   if (DECL_FUNCTION_SPECIFIC_TARGET (fndecl))
     {
       fprintf (stream, "\t.option push\n");
-      std::string isa = riscv_current_subset_list ()->to_string (true);
-      fprintf (stream, "\t.option arch, %s\n", isa.c_str ());
 
       struct cl_target_option *local_cl_target =
 	TREE_TARGET_OPTION (DECL_FUNCTION_SPECIFIC_TARGET (fndecl));
       struct cl_target_option *global_cl_target =
 	TREE_TARGET_OPTION (target_option_default_node);
+
+      const char *local_arch_str = get_arch_str (local_cl_target);
+      const char *arch_str = local_arch_str != NULL
+	? local_arch_str
+	: riscv_arch_str (true).c_str ();
+      fprintf (stream, "\t.option arch, %s\n", arch_str);
       const char *local_tune_str = get_tune_str (local_cl_target);
       const char *global_tune_str = get_tune_str (global_cl_target);
       if (strcmp (local_tune_str, global_tune_str) != 0)
@@ -8803,10 +9136,10 @@ riscv_init_machine_status (void)
   return ggc_cleared_alloc<machine_function> ();
 }
 
-/* Return the VLEN value associated with -march.
+/* Return the VLEN value associated with -march and -mwrvv-vector-bits.
    TODO: So far we only support length-agnostic value. */
 static poly_uint16
-riscv_convert_vector_bits (struct gcc_options *opts)
+riscv_convert_vector_chunks (struct gcc_options *opts)
 {
   int chunk_num;
   int min_vlen = TARGET_MIN_VLEN_OPTS (opts);
@@ -8849,10 +9182,15 @@ riscv_convert_vector_bits (struct gcc_options *opts)
      compile-time constant if TARGET_VECTOR is disabled.  */
   if (TARGET_VECTOR_OPTS_P (opts))
     {
-      if (opts->x_riscv_autovec_preference == RVV_FIXED_VLMAX)
-	return (int) min_vlen / (riscv_bytes_per_vector_chunk * 8);
-      else
-	return poly_uint16 (chunk_num, chunk_num);
+      switch (opts->x_rvv_vector_bits)
+	{
+	case RVV_VECTOR_BITS_SCALABLE:
+	  return poly_uint16 (chunk_num, chunk_num);
+	case RVV_VECTOR_BITS_ZVL:
+	  return (int) min_vlen / (riscv_bytes_per_vector_chunk * 8);
+	default:
+	  gcc_unreachable ();
+	}
     }
   else
     return 1;
@@ -8922,13 +9260,13 @@ riscv_override_options_internal (struct gcc_options *opts)
   if (TARGET_VECTOR && TARGET_BIG_ENDIAN)
     sorry ("Current RISC-V GCC does not support RVV in big-endian mode");
 
-  /* Convert -march to a chunks count.  */
-  riscv_vector_chunks = riscv_convert_vector_bits (opts);
+  /* Convert -march and -mrvv-vector-bits to a chunks count.  */
+  riscv_vector_chunks = riscv_convert_vector_chunks (opts);
 }
 
 /* Implement TARGET_OPTION_OVERRIDE.  */
 
-static void
+void
 riscv_option_override (void)
 {
 #ifdef SUBTARGET_OVERRIDE_OPTIONS
@@ -9437,6 +9775,10 @@ riscv_set_current_function (tree decl)
   /* First set the target options.  */
   cl_target_option_restore (&global_options, &global_options_set,
 			    TREE_TARGET_OPTION (new_tree));
+
+  /* The ISA extension can vary based on the function extension like target.
+     Thus, make sure that the machine modes are reflected correctly here.  */
+  init_adjust_machine_modes ();
 
   riscv_save_restore_target_globals (new_tree);
 }
@@ -10608,7 +10950,11 @@ riscv_preferred_else_value (unsigned ifn, tree vectype, unsigned int nops,
 			    tree *ops)
 {
   if (riscv_v_ext_mode_p (TYPE_MODE (vectype)))
-    return get_or_create_ssa_default_def (cfun, create_tmp_var (vectype));
+    {
+      tree tmp_var = create_tmp_var (vectype);
+      TREE_NO_WARNING (tmp_var) = 1;
+      return get_or_create_ssa_default_def (cfun, tmp_var);
+    }
 
   return default_preferred_else_value (ifn, vectype, nops, ops);
 }
@@ -10655,6 +11001,34 @@ riscv_vector_mode_supported_any_target_p (machine_mode)
   if (TARGET_XTHEADVECTOR)
     return false;
   return true;
+}
+
+/* Implements hook TARGET_FUNCTION_VALUE_REGNO_P.  */
+
+static bool
+riscv_function_value_regno_p (const unsigned regno)
+{
+  if (GP_RETURN_FIRST <= regno && regno <= GP_RETURN_LAST)
+    return true;
+
+  if (FP_RETURN_FIRST <= regno && regno <= FP_RETURN_LAST)
+    return true;
+
+  if (TARGET_VECTOR && regno == V_RETURN)
+    return true;
+
+  return false;
+}
+
+/* Implements hook TARGET_GET_RAW_RESULT_MODE.  */
+
+static fixed_size_mode
+riscv_get_raw_result_mode (int regno)
+{
+  if (!is_a <fixed_size_mode> (reg_raw_mode[regno]))
+    return as_a <fixed_size_mode> (VOIDmode);
+
+  return default_get_reg_raw_mode (regno);
 }
 
 /* Initialize the GCC target structure.  */
@@ -11002,6 +11376,12 @@ riscv_vector_mode_supported_any_target_p (machine_mode)
 
 #undef TARGET_VECTOR_MODE_SUPPORTED_ANY_TARGET_P
 #define TARGET_VECTOR_MODE_SUPPORTED_ANY_TARGET_P riscv_vector_mode_supported_any_target_p
+
+#undef TARGET_FUNCTION_VALUE_REGNO_P
+#define TARGET_FUNCTION_VALUE_REGNO_P riscv_function_value_regno_p
+
+#undef TARGET_GET_RAW_RESULT_MODE
+#define TARGET_GET_RAW_RESULT_MODE riscv_get_raw_result_mode
 
 struct gcc_target targetm = TARGET_INITIALIZER;
 

@@ -34,9 +34,10 @@ enum riscv_symbol_type {
   SYMBOL_TLS,
   SYMBOL_TLS_LE,
   SYMBOL_TLS_IE,
-  SYMBOL_TLS_GD
+  SYMBOL_TLS_GD,
+  SYMBOL_TLSDESC,
 };
-#define NUM_SYMBOL_TYPES (SYMBOL_TLS_GD + 1)
+#define NUM_SYMBOL_TYPES (SYMBOL_TLSDESC + 1)
 
 /* Classifies an address.
 
@@ -507,6 +508,10 @@ enum insn_type : unsigned int
   SCALAR_MOVE_MERGED_OP = HAS_DEST_P | HAS_MASK_P | USE_ONE_TRUE_MASK_P
 			  | HAS_MERGE_P | TDEFAULT_POLICY_P | MDEFAULT_POLICY_P
 			  | UNARY_OP_P,
+
+  SCALAR_MOVE_MERGED_OP_TU = HAS_DEST_P | HAS_MASK_P | USE_ONE_TRUE_MASK_P
+			  | HAS_MERGE_P | TU_POLICY_P | MDEFAULT_POLICY_P
+			  | UNARY_OP_P,
 };
 
 enum vlmul_type
@@ -546,6 +551,7 @@ enum avl_type
 };
 /* Routines implemented in riscv-vector-builtins.cc.  */
 void init_builtins (void);
+void reinit_builtins (void);
 const char *mangle_builtin_type (const_tree);
 tree lookup_vector_type_attribute (const_tree);
 bool builtin_type_p (const_tree);
@@ -603,7 +609,7 @@ bool simm5_p (rtx);
 bool neg_simm5_p (rtx);
 #ifdef RTX_CODE
 bool has_vi_variant_p (rtx_code, rtx);
-void expand_vec_cmp (rtx, rtx_code, rtx, rtx);
+void expand_vec_cmp (rtx, rtx_code, rtx, rtx, rtx = nullptr, rtx = nullptr);
 bool expand_vec_cmp_float (rtx, rtx_code, rtx, rtx, bool);
 void expand_cond_len_unop (unsigned, rtx *);
 void expand_cond_len_binop (unsigned, rtx *);
@@ -762,6 +768,7 @@ extern bool
 riscv_option_valid_attribute_p (tree, tree, tree, int);
 extern void
 riscv_override_options_internal (struct gcc_options *);
+extern void riscv_option_override (void);
 
 struct riscv_tune_param;
 /* Information about one micro-arch we know about.  */
@@ -779,5 +786,12 @@ struct riscv_tune_info {
 const struct riscv_tune_info *
 riscv_parse_tune (const char *, bool);
 const cpu_vector_cost *get_vector_costs ();
+
+enum
+{
+  RISCV_MAJOR_VERSION_BASE = 1000000,
+  RISCV_MINOR_VERSION_BASE = 1000,
+  RISCV_REVISION_VERSION_BASE = 1,
+};
 
 #endif /* ! GCC_RISCV_PROTOS_H */

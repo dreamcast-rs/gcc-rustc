@@ -393,6 +393,9 @@ cp_compare_floating_point_conversion_ranks (tree t1, tree t2)
      has higher rank.  */
   if (cnt > 1 && mv2 == long_double_type_node)
     return -2;
+  /* And similarly if t2 is float, t2 has lower rank.  */
+  if (cnt > 1 && mv2 == float_type_node)
+    return 2;
   /* Otherwise, they have equal rank, but extended types
      (other than std::bfloat16_t) have higher subrank.
      std::bfloat16_t shouldn't have equal rank to any standard
@@ -2125,13 +2128,6 @@ cxx_sizeof_expr (location_t loc, tree e, tsubst_flags_t complain)
   location_t e_loc = cp_expr_loc_or_loc (e, loc);
   STRIP_ANY_LOCATION_WRAPPER (e);
 
-  /* To get the size of a static data member declared as an array of
-     unknown bound, we need to instantiate it.  */
-  if (VAR_P (e)
-      && VAR_HAD_UNKNOWN_BOUND (e)
-      && DECL_TEMPLATE_INSTANTIATION (e))
-    instantiate_decl (e, /*defer_ok*/true, /*expl_inst_mem*/false);
-
   if (TREE_CODE (e) == PARM_DECL
       && DECL_ARRAY_PARAMETER_P (e)
       && (complain & tf_warning))
@@ -2400,6 +2396,7 @@ is_bitfield_expr_with_lowered_type (const_tree exp)
     case NEGATE_EXPR:
     case NON_LVALUE_EXPR:
     case BIT_NOT_EXPR:
+    case CLEANUP_POINT_EXPR:
       return is_bitfield_expr_with_lowered_type (TREE_OPERAND (exp, 0));
 
     case COMPONENT_REF:
@@ -5500,6 +5497,7 @@ cp_build_binary_op (const op_location_t &location,
 	  if (!TYPE_P (type1))
 	    type1 = TREE_TYPE (type1);
 	  if (type0
+	      && type1
 	      && INDIRECT_TYPE_P (type0)
 	      && same_type_p (TREE_TYPE (type0), type1))
 	    {
@@ -10626,8 +10624,10 @@ maybe_warn_about_returning_address_of_local (tree retval, location_t loc)
       || TREE_CODE (whats_returned) == TARGET_EXPR)
     {
       if (TYPE_REF_P (valtype))
-	warning_at (loc, OPT_Wreturn_local_addr,
-		    "returning reference to temporary");
+	/* P2748 made this an error in C++26.  */
+	emit_diagnostic (cxx_dialect >= cxx26 ? DK_PERMERROR : DK_WARNING,
+			 loc, OPT_Wreturn_local_addr,
+			 "returning reference to temporary");
       else if (TYPE_PTR_P (valtype))
 	warning_at (loc, OPT_Wreturn_local_addr,
 		    "returning pointer to temporary");
@@ -10837,37 +10837,39 @@ treat_lvalue_as_rvalue_p (tree expr, bool return_p)
      parenthesized) id-expression that names an implicitly movable entity
      declared in the body or parameter-declaration-clause of the innermost
      enclosing function or lambda-expression, */
-  if (DECL_CONTEXT (retval) != current_function_decl)
-    return NULL_TREE;
   if (return_p)
     {
+      if (DECL_CONTEXT (retval) != current_function_decl)
+	return NULL_TREE;
       expr = move (expr);
       if (expr == error_mark_node)
 	return NULL_TREE;
       return set_implicit_rvalue_p (expr);
     }
 
-  /* if the operand of a throw-expression is a (possibly parenthesized)
-     id-expression that names an implicitly movable entity whose scope does not
-     extend beyond the compound-statement of the innermost try-block or
-     function-try-block (if any) whose compound-statement or ctor-initializer
-     encloses the throw-expression, */
+  /* if the id-expression (possibly parenthesized) is the operand of
+     a throw-expression, and names an implicitly movable entity that belongs
+     to a scope that does not contain the compound-statement of the innermost
+     lambda-expression, try-block, or function-try-block (if any) whose
+     compound-statement or ctor-initializer contains the throw-expression.  */
 
   /* C++20 added move on throw of parms.  */
   if (TREE_CODE (retval) == PARM_DECL && cxx_dialect < cxx20)
     return NULL_TREE;
 
+  /* We don't check for lambda-expression here, because we should not get past
+     the DECL_HAS_VALUE_EXPR_P check above.  */
   for (cp_binding_level *b = current_binding_level;
-       ; b = b->level_chain)
+       b->kind != sk_namespace; b = b->level_chain)
     {
       for (tree decl = b->names; decl; decl = TREE_CHAIN (decl))
 	if (decl == retval)
 	  return set_implicit_rvalue_p (move (expr));
-      if (b->kind == sk_function_parms
-	  || b->kind == sk_try
-	  || b->kind == sk_namespace)
+      if (b->kind == sk_try)
 	return NULL_TREE;
     }
+
+  return set_implicit_rvalue_p (move (expr));
 }
 
 /* Warn about dubious usage of std::move (in a return statement, if RETURN_P

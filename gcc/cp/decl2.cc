@@ -2710,15 +2710,21 @@ min_vis_expr_r (tree *tp, int */*walk_subtrees*/, void *data)
       break;
 
     case TEMPLATE_DECL:
-      if (DECL_ALIAS_TEMPLATE_P (t))
+      if (DECL_ALIAS_TEMPLATE_P (t) || standard_concept_p (t))
 	/* FIXME: We don't maintain TREE_PUBLIC / DECL_VISIBILITY for
-	   alias templates so we can't trust it here (PR107906).  */
+	   alias templates so we can't trust it here (PR107906).  Ditto
+	   for concepts.  */
 	break;
       t = DECL_TEMPLATE_RESULT (t);
       /* Fall through.  */
     case VAR_DECL:
     case FUNCTION_DECL:
-      if (! TREE_PUBLIC (t))
+      if (decl_constant_var_p (t))
+	/* The ODR allows definitions in different TUs to refer to distinct
+	   constant variables with internal or no linkage, so such a reference
+	   shouldn't affect visibility (PR110323).  FIXME but only if the
+	   lvalue-rvalue conversion is applied.  */;
+      else if (! TREE_PUBLIC (t))
 	tpvis = VISIBILITY_ANON;
       else
 	tpvis = DECL_VISIBILITY (t);
@@ -3360,7 +3366,9 @@ import_export_decl (tree decl)
 
      * implicit instantiations of function templates
 
-     * inline function
+     * inline functions
+
+     * inline variables
 
      * implicit instantiations of static data members of class
        templates
@@ -3383,6 +3391,7 @@ import_export_decl (tree decl)
 		|| DECL_DECLARED_INLINE_P (decl));
   else
     gcc_assert (DECL_IMPLICIT_INSTANTIATION (decl)
+		|| DECL_INLINE_VAR_P (decl)
 		|| DECL_VTABLE_OR_VTT_P (decl)
 		|| DECL_TINFO_P (decl));
   /* Check that a definition of DECL is available in this translation
@@ -3395,6 +3404,10 @@ import_export_decl (tree decl)
      unit.  */
   import_p = false;
 
+  /* FIXME: Since https://github.com/itanium-cxx-abi/cxx-abi/pull/171,
+     the ABI specifies that classes attached to named modules should
+     have their vtables uniquely emitted in the object for the module
+     unit in which it is defined.  And similarly for RTTI structures.  */
   if (VAR_P (decl) && DECL_VTABLE_OR_VTT_P (decl))
     {
       class_type = DECL_CONTEXT (decl);
@@ -3511,7 +3524,7 @@ import_export_decl (tree decl)
 	   this entity as undefined in this translation unit.  */
 	import_p = true;
     }
-  else if (DECL_FUNCTION_MEMBER_P (decl))
+  else if (TREE_CODE (decl) == FUNCTION_DECL && DECL_FUNCTION_MEMBER_P (decl))
     {
       if (!DECL_DECLARED_INLINE_P (decl))
 	{
@@ -3556,6 +3569,9 @@ import_export_decl (tree decl)
     }
 
   DECL_INTERFACE_KNOWN (decl) = 1;
+
+  if (DECL_CLONED_FUNCTION_P (decl))
+    maybe_optimize_cdtor (decl);
 }
 
 /* Return an expression that performs the destruction of DECL, which
@@ -4689,8 +4705,19 @@ no_linkage_error (tree decl)
       bool d = false;
       auto_diagnostic_group grp;
       if (cxx_dialect >= cxx11)
-	d = permerror (DECL_SOURCE_LOCATION (decl), "%q#D, declared using "
-		       "unnamed type, is used but never defined", decl);
+	{
+	  /* If t is declared in a module CMI, then decl could actually
+	     be defined in a different TU, so don't warn since C++20.  */
+	  tree relaxed = no_linkage_check (t, /*relaxed_p=*/true);
+	  if (relaxed != NULL_TREE)
+	    d = permerror (DECL_SOURCE_LOCATION (decl),
+			   "%q#D, declared using an unnamed type, "
+			   "is used but never defined", decl);
+	  else if (cxx_dialect < cxx20)
+	    d = pedwarn (DECL_SOURCE_LOCATION (decl), OPT_Wc__20_extensions,
+			 "%q#D, declared using an unnamed type, "
+			 "is used but not defined", decl);
+	}
       else if (DECL_EXTERN_C_P (decl))
 	/* Allow this; it's pretty common in C.  */;
       else if (VAR_P (decl))
@@ -4709,13 +4736,31 @@ no_linkage_error (tree decl)
 	inform (DECL_SOURCE_LOCATION (TYPE_NAME (t)), "%q#D does not refer "
 		"to the unqualified type, so it is not used for linkage",
 		TYPE_NAME (t));
+      /* Suppress warning from check_global_declaration if needed.  */
+      if (d)
+	suppress_warning (decl, OPT_Wunused);
     }
   else if (cxx_dialect >= cxx11)
     {
       if (VAR_P (decl) || !DECL_PURE_VIRTUAL_P (decl))
-	permerror (DECL_SOURCE_LOCATION (decl),
-		   "%q#D, declared using local type "
-		   "%qT, is used but never defined", decl, t);
+	{
+	  /* Similarly for local types in a function with vague linkage or
+	     defined in a module CMI, then decl could actually be defined
+	     in a different TU, so don't warn since C++20.  */
+	  bool d = false;
+	  tree relaxed = no_linkage_check (t, /*relaxed_p=*/true);
+	  if (relaxed != NULL_TREE)
+	    d = permerror (DECL_SOURCE_LOCATION (decl),
+			   "%q#D, declared using local type "
+			   "%qT, is used but never defined", decl, t);
+	  else if (cxx_dialect < cxx20)
+	    d = pedwarn (DECL_SOURCE_LOCATION (decl), OPT_Wc__20_extensions,
+			 "%q#D, declared using local type "
+			 "%qT, is used but not defined here", decl, t);
+	  /* Suppress warning from check_global_declaration if needed.  */
+	  if (d)
+	    suppress_warning (decl, OPT_Wunused);
+	}
     }
   else if (VAR_P (decl))
     warning_at (DECL_SOURCE_LOCATION (decl), 0, "type %qT with no linkage "
@@ -5907,6 +5952,8 @@ mark_used (tree decl, tsubst_flags_t complain /* = tf_warning_or_error */)
      find out its type.  For OpenMP user defined reductions, we need them
      instantiated for reduction clauses which inline them by hand directly.  */
   if (undeduced_auto_decl (decl)
+      || (VAR_P (decl)
+	  && VAR_HAD_UNKNOWN_BOUND (decl))
       || (TREE_CODE (decl) == FUNCTION_DECL
 	  && DECL_OMP_DECLARE_REDUCTION_P (decl)))
     maybe_instantiate_decl (decl);

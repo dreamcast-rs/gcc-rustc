@@ -75,6 +75,8 @@ along with GCC; see the file COPYING3.  If not see
 #include "tree-ssa-loop-niter.h"
 #include "tree-ssa-loop.h"
 #include "symbol-summary.h"
+#include "sreal.h"
+#include "ipa-cp.h"
 #include "ipa-prop.h"
 #include "ipa-fnsummary.h"
 #include "cfgloop.h"
@@ -2642,7 +2644,9 @@ points_to_local_or_readonly_memory_p (tree t)
 	return true;
       return !ptr_deref_may_alias_global_p (t, false);
     }
-  if (TREE_CODE (t) == ADDR_EXPR)
+  if (TREE_CODE (t) == ADDR_EXPR
+      && (TREE_CODE (TREE_OPERAND (t, 0)) != TARGET_MEM_REF
+	  || TREE_CODE (TREE_OPERAND (TREE_OPERAND (t, 0), 0)) != INTEGER_CST))
     return refs_local_or_readonly_memory_p (TREE_OPERAND (t, 0));
   return false;
 }

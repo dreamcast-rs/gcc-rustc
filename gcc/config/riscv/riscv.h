@@ -50,18 +50,21 @@ extern const char *riscv_expand_arch (int argc, const char **argv);
 extern const char *riscv_expand_arch_from_cpu (int argc, const char **argv);
 extern const char *riscv_default_mtune (int argc, const char **argv);
 extern const char *riscv_multi_lib_check (int argc, const char **argv);
+extern const char *riscv_arch_help (int argc, const char **argv);
 
 # define EXTRA_SPEC_FUNCTIONS						\
   { "riscv_expand_arch", riscv_expand_arch },				\
   { "riscv_expand_arch_from_cpu", riscv_expand_arch_from_cpu },		\
   { "riscv_default_mtune", riscv_default_mtune },			\
-  { "riscv_multi_lib_check", riscv_multi_lib_check },
+  { "riscv_multi_lib_check", riscv_multi_lib_check },			\
+  { "riscv_arch_help", riscv_arch_help },
 
 /* Support for a compile-time default CPU, et cetera.  The rules are:
    --with-arch is ignored if -march or -mcpu is specified.
    --with-abi is ignored if -mabi is specified.
    --with-tune is ignored if -mtune or -mcpu is specified.
    --with-isa-spec is ignored if -misa-spec is specified.
+   --with-tls is ignored if -mtls-dialect is specified.
 
    But using default -march/-mtune value if -mcpu don't have valid option.  */
 #define OPTION_DEFAULT_SPECS \
@@ -71,8 +74,9 @@ extern const char *riscv_multi_lib_check (int argc, const char **argv);
   {"arch", "%{!march=*:"						\
 	   "  %{!mcpu=*:-march=%(VALUE)}"				\
 	   "  %{mcpu=*:%:riscv_expand_arch_from_cpu(%* %(VALUE))}}" },	\
-  {"abi", "%{!mabi=*:-mabi=%(VALUE)}" }, \
-  {"isa_spec", "%{!misa-spec=*:-misa-spec=%(VALUE)}" }, \
+  {"abi", "%{!mabi=*:-mabi=%(VALUE)}" },				\
+  {"isa_spec", "%{!misa-spec=*:-misa-spec=%(VALUE)}" },			\
+  {"tls", "%{!mtls-dialect=*:-mtls-dialect=%(VALUE)}"},         	\
 
 #ifdef IN_LIBGCC2
 #undef TARGET_64BIT
@@ -109,6 +113,9 @@ ASM_MISA_SPEC
 
 #undef DRIVER_SELF_SPECS
 #define DRIVER_SELF_SPECS					\
+"%{march=help:%:riscv_arch_help()} "				\
+"%{print-supported-extensions:%:riscv_arch_help()} "		\
+"%{-print-supported-extensions:%:riscv_arch_help()} "		\
 "%{march=*:%:riscv_expand_arch(%*)} "				\
 "%{!march=*:%{mcpu=*:%:riscv_expand_arch_from_cpu(%*)}} "
 
@@ -676,6 +683,12 @@ enum reg_class
 
 #define GP_RETURN GP_ARG_FIRST
 #define FP_RETURN (UNITS_PER_FP_ARG == 0 ? GP_RETURN : FP_ARG_FIRST)
+#define V_RETURN  V_REG_FIRST
+
+#define GP_RETURN_FIRST GP_ARG_FIRST
+#define GP_RETURN_LAST  GP_ARG_FIRST + 1
+#define FP_RETURN_FIRST FP_RETURN
+#define FP_RETURN_LAST  FP_RETURN + 1
 
 #define MAX_ARGS_IN_REGISTERS \
   (riscv_abi == ABI_ILP32E || riscv_abi == ABI_LP64E \
@@ -706,8 +719,6 @@ enum reg_class
 
 #define FUNCTION_VALUE(VALTYPE, FUNC) \
   riscv_function_value (VALTYPE, FUNC, VOIDmode)
-
-#define FUNCTION_VALUE_REGNO_P(N) ((N) == GP_RETURN || (N) == FP_RETURN)
 
 /* 1 if N is a possible register number for function argument passing.
    We have no FP argument registers when soft-float.  */
@@ -928,7 +939,7 @@ extern enum riscv_cc get_riscv_cc (const rtx use);
   "fs0", "fs1", "fa0", "fa1", "fa2", "fa3", "fa4", "fa5",	\
   "fa6", "fa7", "fs2", "fs3", "fs4", "fs5", "fs6", "fs7",	\
   "fs8", "fs9", "fs10","fs11","ft8", "ft9", "ft10","ft11",	\
-  "arg", "frame", "vl", "vtype", "vxrm", "frm", "N/A", "N/A",   \
+  "arg", "frame", "vl", "vtype", "vxrm", "frm", "vxsat", "N/A", \
   "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A",	\
   "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A",	\
   "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A",	\
@@ -1222,5 +1233,8 @@ extern void riscv_remove_unneeded_save_restore_calls (void);
 
 #define HAVE_POST_MODIFY_DISP TARGET_XTHEADMEMIDX
 #define HAVE_PRE_MODIFY_DISP  TARGET_XTHEADMEMIDX
+
+/* Check TLS Descriptors mechanism is selected.  */
+#define TARGET_TLSDESC (riscv_tls_dialect == TLS_DESCRIPTORS)
 
 #endif /* ! GCC_RISCV_H */

@@ -906,7 +906,8 @@ find_uninit_fields_r (tree *tp, int *walk_subtrees, void *data)
 	    warning_at (EXPR_LOCATION (init), OPT_Wuninitialized,
 			"reference %qD is not yet bound to a value when used "
 			"here", field);
-	  else if (!INDIRECT_TYPE_P (type) || is_this_parameter (d->member))
+	  else if ((!INDIRECT_TYPE_P (type) || is_this_parameter (d->member))
+		   && !conv_binds_to_reference_parm_p (type, init))
 	    warning_at (EXPR_LOCATION (init), OPT_Wuninitialized,
 			"member %qD is used uninitialized", field);
 	  *walk_subtrees = false;
@@ -931,6 +932,37 @@ find_uninit_fields (tree *t, hash_set<tree> *uninitialized, tree member)
       find_uninit_data data = { uninitialized, member };
       cp_walk_tree_without_duplicates (t, find_uninit_fields_r, &data);
     }
+}
+
+/* Return true if it's OK to initialize an array TYPE from INIT.  Mere mortals
+   can't copy arrays, but the compiler can do so with a VEC_INIT_EXPR in
+   certain cases.  */
+
+static bool
+can_init_array_with_p (tree type, tree init)
+{
+  if (!init)
+    /* Value-init, OK.  */
+    return true;
+  if (!same_type_ignoring_top_level_qualifiers_p (type, TREE_TYPE (init)))
+    return false;
+  /* We're called from synthesize_method, and we're processing the
+     mem-initializers of a constructor.  */
+  if (DECL_DEFAULTED_FN (current_function_decl))
+    return true;
+  if (TREE_CODE (init) == TARGET_EXPR)
+    {
+      init = TARGET_EXPR_INITIAL (init);
+      /* As an extension, we allow copying from a compound literal.  */
+      if (TREE_CODE (init) == CONSTRUCTOR)
+	return CONSTRUCTOR_C99_COMPOUND_LITERAL (init);
+      /* VEC_INIT_EXPR is used for non-constant initialization of trailing
+	 elements with no explicit initializers.  */
+      else if (TREE_CODE (init) == VEC_INIT_EXPR)
+	return true;
+    }
+
+  return false;
 }
 
 /* Initialize MEMBER, a FIELD_DECL, with INIT, a TREE_LIST of
@@ -1086,9 +1118,7 @@ perform_member_init (tree member, tree init, hash_set<tree> &uninitialized)
     {
       if (TREE_CODE (type) == ARRAY_TYPE)
 	{
-	  if (init == NULL_TREE
-	      || same_type_ignoring_top_level_qualifiers_p (type,
-							    TREE_TYPE (init)))
+	  if (can_init_array_with_p (type, init))
 	    {
 	      if (TYPE_DOMAIN (type) && TYPE_MAX_VALUE (TYPE_DOMAIN (type)))
 		{
@@ -5192,9 +5222,13 @@ build_delete (location_t loc, tree otype, tree addr,
       addr = convert_force (build_pointer_type (type), addr, 0, complain);
     }
 
+  tree addr_expr = NULL_TREE;
   if (deleting)
     /* We will use ADDR multiple times so we must save it.  */
-    addr = save_expr (addr);
+    {
+      addr_expr = get_target_expr (addr);
+      addr = TARGET_EXPR_SLOT (addr_expr);
+    }
 
   bool virtual_p = false;
   if (type_build_dtor_call (type))
@@ -5312,6 +5346,9 @@ build_delete (location_t loc, tree otype, tree addr,
 
   if (!integer_nonzerop (ifexp))
     expr = build3 (COND_EXPR, void_type_node, ifexp, expr, void_node);
+
+  if (addr_expr)
+    expr = cp_build_compound_expr (addr_expr, expr, tf_none);
 
   protected_set_expr_location (expr, loc);
   return expr;

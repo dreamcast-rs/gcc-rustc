@@ -21,6 +21,8 @@ along with GCC; see the file COPYING3.  If not see
 #include <vector>
 
 #define INCLUDE_STRING
+#define INCLUDE_SET
+#define INCLUDE_MAP
 #include "config.h"
 #include "system.h"
 #include "coretypes.h"
@@ -364,6 +366,7 @@ static const struct riscv_ext_version riscv_ext_version_table[] =
   {"xcvalu", ISA_SPEC_CLASS_NONE, 1, 0},
   {"xcvelw", ISA_SPEC_CLASS_NONE, 1, 0},
   {"xcvsimd", ISA_SPEC_CLASS_NONE, 1, 0},
+  {"xcvbi", ISA_SPEC_CLASS_NONE, 1, 0},
 
   {"xtheadba", ISA_SPEC_CLASS_NONE, 1, 0},
   {"xtheadbb", ISA_SPEC_CLASS_NONE, 1, 0},
@@ -421,11 +424,11 @@ static const char *riscv_supported_std_ext (void);
 
 bool riscv_subset_list::parse_failed = false;
 
-static riscv_subset_list *current_subset_list = NULL;
+static riscv_subset_list *cmdline_subset_list = NULL;
 
-const riscv_subset_list *riscv_current_subset_list ()
+const riscv_subset_list *riscv_cmdline_subset_list ()
 {
-  return current_subset_list;
+  return cmdline_subset_list;
 }
 
 /* struct for recording multi-lib info.  */
@@ -455,7 +458,8 @@ riscv_subset_t::riscv_subset_t ()
 }
 
 riscv_subset_list::riscv_subset_list (const char *arch, location_t loc)
-  : m_arch (arch), m_loc (loc), m_head (NULL), m_tail (NULL), m_xlen (0)
+  : m_arch (arch), m_loc (loc), m_head (NULL), m_tail (NULL), m_xlen (0),
+    m_subset_num (0)
 {
 }
 
@@ -660,12 +664,17 @@ riscv_subset_list::add (const char *subset, int major_version,
 	  ext->minor_version = minor_version;
 	}
       else
-	error_at (
-	  m_loc,
-	  "%<-march=%s%>: extension %qs appear more than one time",
-	  m_arch,
-	  subset);
-
+	{
+	  /* The extension is already in the list.  */
+	  if (!m_allow_adding_dup
+	      || ext->major_version != major_version
+	      || ext->minor_version != minor_version)
+	    error_at (
+	      m_loc,
+	      "%<-march=%s%>: extension %qs appear more than one time",
+	      m_arch,
+	      subset);
+	}
       return;
     }
   else if (strlen (subset) == 1 && !standard_extensions_p (subset))
@@ -701,6 +710,7 @@ riscv_subset_list::add (const char *subset, int major_version,
       return;
     }
 
+  m_subset_num++;
   riscv_subset_t *s = new riscv_subset_t ();
   riscv_subset_t *itr;
 
@@ -1398,7 +1408,6 @@ riscv_subset_list::parse (const char *arch, location_t loc)
     return NULL;
 
   riscv_subset_list *subset_list = new riscv_subset_list (arch, loc);
-  riscv_subset_t *itr;
   const char *p = arch;
   p = subset_list->parse_base_ext (p);
   if (p == NULL)
@@ -1425,16 +1434,7 @@ riscv_subset_list::parse (const char *arch, location_t loc)
   if (p == NULL)
     goto fail;
 
-  for (itr = subset_list->m_head; itr != NULL; itr = itr->next)
-    {
-      subset_list->handle_implied_ext (itr->name.c_str ());
-    }
-
-  /* Make sure all implied extensions are included. */
-  gcc_assert (subset_list->check_implied_ext ());
-
-  subset_list->handle_combine_ext ();
-  subset_list->check_conflict_ext ();
+  subset_list->finalize ();
 
   return subset_list;
 
@@ -1464,13 +1464,39 @@ riscv_subset_list::set_loc (location_t loc)
   m_loc = loc;
 }
 
+/* Make sure the implied or combined extension is included after add
+   a new std extension to subset list or likewise.  For exmaple as below,
+
+   void __attribute__((target("arch=+v"))) func () with -march=rv64gc.
+
+   The implied zvl128b and zve64d of the std v should be included.  */
+void
+riscv_subset_list::finalize ()
+{
+  riscv_subset_t *subset;
+  unsigned pre_subset_num;
+
+  do
+    {
+      pre_subset_num = m_subset_num;
+      for (subset = m_head; subset != NULL; subset = subset->next)
+	handle_implied_ext (subset->name.c_str ());
+    }
+  while (pre_subset_num != m_subset_num);
+
+  gcc_assert (check_implied_ext ());
+
+  handle_combine_ext ();
+  check_conflict_ext ();
+}
+
 /* Return the current arch string.  */
 
 std::string
 riscv_arch_str (bool version_p)
 {
-  if (current_subset_list)
-    return current_subset_list->to_string (version_p);
+  if (cmdline_subset_list)
+    return cmdline_subset_list->to_string (version_p);
   else
     return std::string();
 }
@@ -1528,15 +1554,15 @@ static const riscv_ext_flag_table_t riscv_ext_flag_table[] =
 
   {"zihintntl", &gcc_options::x_riscv_zi_subext, MASK_ZIHINTNTL},
   {"zihintpause", &gcc_options::x_riscv_zi_subext, MASK_ZIHINTPAUSE},
+  {"ziccamoa", &gcc_options::x_riscv_zi_subext, MASK_ZICCAMOA},
+  {"ziccif", &gcc_options::x_riscv_zi_subext, MASK_ZICCIF},
+  {"zicclsm", &gcc_options::x_riscv_zi_subext, MASK_ZICCLSM},
+  {"ziccrse", &gcc_options::x_riscv_zi_subext, MASK_ZICCRSE},
 
   {"zicboz", &gcc_options::x_riscv_zicmo_subext, MASK_ZICBOZ},
   {"zicbom", &gcc_options::x_riscv_zicmo_subext, MASK_ZICBOM},
   {"zicbop", &gcc_options::x_riscv_zicmo_subext, MASK_ZICBOP},
   {"zic64b", &gcc_options::x_riscv_zicmo_subext, MASK_ZIC64B},
-  {"ziccamoa", &gcc_options::x_riscv_zicmo_subext, MASK_ZICCAMOA},
-  {"ziccif", &gcc_options::x_riscv_zicmo_subext, MASK_ZICCIF},
-  {"zicclsm", &gcc_options::x_riscv_zicmo_subext, MASK_ZICCLSM},
-  {"ziccrse", &gcc_options::x_riscv_zicmo_subext, MASK_ZICCRSE},
 
   {"zve32x",   &gcc_options::x_target_flags, MASK_VECTOR},
   {"zve32f",   &gcc_options::x_target_flags, MASK_VECTOR},
@@ -1616,6 +1642,7 @@ static const riscv_ext_flag_table_t riscv_ext_flag_table[] =
   {"xcvalu",        &gcc_options::x_riscv_xcv_subext, MASK_XCVALU},
   {"xcvelw",        &gcc_options::x_riscv_xcv_subext, MASK_XCVELW},
   {"xcvsimd",       &gcc_options::x_riscv_xcv_subext, MASK_XCVSIMD},
+  {"xcvbi",         &gcc_options::x_riscv_xcv_subext, MASK_XCVBI},
 
   {"xtheadba",      &gcc_options::x_riscv_xthead_subext, MASK_XTHEADBA},
   {"xtheadbb",      &gcc_options::x_riscv_xthead_subext, MASK_XTHEADBB},
@@ -1648,8 +1675,7 @@ static const riscv_ext_flag_table_t riscv_ext_flag_table[] =
   {NULL, NULL, 0}
 };
 
-/* Apply SUBSET_LIST to OPTS if OPTS is not null, also set CURRENT_SUBSET_LIST
-   to SUBSET_LIST, just note this WON'T delete old CURRENT_SUBSET_LIST.  */
+/* Apply SUBSET_LIST to OPTS if OPTS is not null.  */
 
 void
 riscv_set_arch_by_subset_list (riscv_subset_list *subset_list,
@@ -1668,15 +1694,14 @@ riscv_set_arch_by_subset_list (riscv_subset_list *subset_list,
       else if (subset_list->xlen () == 64)
 	opts->x_target_flags |= MASK_64BIT;
 
-      for (arch_ext_flag_tab = &riscv_ext_flag_table[0]; arch_ext_flag_tab->ext;
+      for (arch_ext_flag_tab = &riscv_ext_flag_table[0];
+	   arch_ext_flag_tab->ext;
 	   ++arch_ext_flag_tab)
 	{
 	  if (subset_list->lookup (arch_ext_flag_tab->ext))
 	    opts->*arch_ext_flag_tab->var_ref |= arch_ext_flag_tab->mask;
 	}
     }
-
-  current_subset_list = subset_list;
 }
 
 /* Parse a RISC-V ISA string into an option mask.  Must clear or set all arch
@@ -1692,34 +1717,12 @@ riscv_parse_arch_string (const char *isa,
   if (!subset_list)
     return;
 
-  if (opts)
-    {
-      const riscv_ext_flag_table_t *arch_ext_flag_tab;
-      /* Clean up target flags before we set.  */
-      for (arch_ext_flag_tab = &riscv_ext_flag_table[0];
-	   arch_ext_flag_tab->ext;
-	   ++arch_ext_flag_tab)
-	opts->*arch_ext_flag_tab->var_ref &= ~arch_ext_flag_tab->mask;
+  if (cmdline_subset_list)
+    delete cmdline_subset_list;
 
-      if (subset_list->xlen () == 32)
-	opts->x_target_flags &= ~MASK_64BIT;
-      else if (subset_list->xlen () == 64)
-	opts->x_target_flags |= MASK_64BIT;
+  cmdline_subset_list = subset_list;
 
-
-      for (arch_ext_flag_tab = &riscv_ext_flag_table[0];
-	   arch_ext_flag_tab->ext;
-	   ++arch_ext_flag_tab)
-	{
-	  if (subset_list->lookup (arch_ext_flag_tab->ext))
-	    opts->*arch_ext_flag_tab->var_ref |= arch_ext_flag_tab->mask;
-	}
-    }
-
-  if (current_subset_list)
-    delete current_subset_list;
-
-  current_subset_list = subset_list;
+  riscv_set_arch_by_subset_list (subset_list, opts);
 }
 
 /* Return the riscv_cpu_info entry for CPU, NULL if not found.  */
@@ -2223,6 +2226,50 @@ riscv_get_valid_option_values (int option_code,
     }
 
   return v;
+}
+
+const char *
+riscv_arch_help (int, const char **)
+{
+  /* Collect all exts, and sort it in canonical order.  */
+  struct extension_comparator {
+    bool operator()(const std::string& a, const std::string& b) const {
+      return subset_cmp(a, b) >= 1;
+    }
+  };
+  std::map<std::string, std::set<unsigned>, extension_comparator> all_exts;
+  for (const riscv_ext_version &ext : riscv_ext_version_table)
+    {
+      if (!ext.name)
+	break;
+      if (ext.name[0] == 'g')
+	continue;
+      unsigned version_value = (ext.major_version * RISCV_MAJOR_VERSION_BASE)
+				+ (ext.minor_version
+				   * RISCV_MINOR_VERSION_BASE);
+      all_exts[ext.name].insert(version_value);
+    }
+
+  printf("All available -march extensions for RISC-V:\n");
+  printf("\t%-20sVersion\n", "Name");
+  for (auto const &ext_info : all_exts)
+    {
+      printf("\t%-20s\t", ext_info.first.c_str());
+      bool first = true;
+      for (auto version : ext_info.second)
+	{
+	  if (first)
+	    first = false;
+	  else
+	    printf(", ");
+	  unsigned major = version / RISCV_MAJOR_VERSION_BASE;
+	  unsigned minor = (version % RISCV_MAJOR_VERSION_BASE)
+			    / RISCV_MINOR_VERSION_BASE;
+	  printf("%u.%u", major, minor);
+	}
+      printf("\n");
+    }
+  exit (0);
 }
 
 /* Implement TARGET_OPTION_OPTIMIZATION_TABLE.  */

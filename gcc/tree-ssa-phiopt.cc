@@ -1251,7 +1251,7 @@ value_replacement (basic_block cond_bb, basic_block middle_bb,
 	     _3 = i_6 != 0;
 	     Here, carg is 4, oarg is 6, crhs is 0, and because
 	     (4 != 0) == (6 != 0), we don't care if i_6 is 4 or 6, both
-	     have the same outcome.  So, can can optimize this to:
+	     have the same outcome.  So, we can optimize this to:
 	     _3 = i_2(D) != 0;
 	     If the single imm use of phi result >, >=, < or <=, similarly
 	     we can check if both carg and oarg compare the same against
@@ -1918,6 +1918,10 @@ minmax_replacement (basic_block cond_bb, basic_block middle_bb, basic_block alt_
 	  || gimple_code (assign) != GIMPLE_ASSIGN)
 	return false;
 
+      /* There cannot be any phi nodes in the middle bb. */
+      if (!gimple_seq_empty_p (phi_nodes (middle_bb)))
+	return false;
+
       lhs = gimple_assign_lhs (assign);
       ass_code = gimple_assign_rhs_code (assign);
       if (ass_code != MAX_EXPR && ass_code != MIN_EXPR)
@@ -1929,6 +1933,10 @@ minmax_replacement (basic_block cond_bb, basic_block middle_bb, basic_block alt_
       assign = last_and_only_stmt (alt_middle_bb);
       if (!assign
 	  || gimple_code (assign) != GIMPLE_ASSIGN)
+	return false;
+
+      /* There cannot be any phi nodes in the alt middle bb. */
+      if (!gimple_seq_empty_p (phi_nodes (alt_middle_bb)))
 	return false;
 
       alt_lhs = gimple_assign_lhs (assign);
@@ -2040,6 +2048,10 @@ minmax_replacement (basic_block cond_bb, basic_block middle_bb, basic_block alt_
 
       if (!assign
 	  || gimple_code (assign) != GIMPLE_ASSIGN)
+	return false;
+
+      /* There cannot be any phi nodes in the middle bb. */
+      if (!gimple_seq_empty_p (phi_nodes (middle_bb)))
 	return false;
 
       lhs = gimple_assign_lhs (assign);

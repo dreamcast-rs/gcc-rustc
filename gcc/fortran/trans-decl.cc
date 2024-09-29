@@ -1526,6 +1526,10 @@ add_attributes_to_decl (symbol_attribute sym_attr, tree list)
     list = tree_cons (get_identifier ("omp declare target"),
 		      clauses, list);
 
+  if (sym_attr.omp_declare_target_indirect)
+    list = tree_cons (get_identifier ("omp declare target indirect"),
+		      clauses, list);
+
   return list;
 }
 
@@ -1793,7 +1797,8 @@ gfc_get_symbol_decl (gfc_symbol * sym)
     }
 
   if (sym->ts.type == BT_UNKNOWN)
-    gfc_fatal_error ("%s at %C has no default type", sym->name);
+    gfc_fatal_error ("%s at %L has no default type", sym->name,
+		     &sym->declared_at);
 
   if (sym->attr.intrinsic)
     gfc_internal_error ("intrinsic variable which isn't a procedure");
@@ -5210,8 +5215,8 @@ gfc_trans_deferred_vars (gfc_symbol * proc_sym, gfc_wrapped_block * block)
 	tree tmp = lookup_attribute ("omp allocate",
 				     DECL_ATTRIBUTES (n->sym->backend_decl));
 	tmp = TREE_VALUE (tmp);
-	TREE_PURPOSE (tmp) = se.expr;	
-	TREE_VALUE (tmp) = align;	
+	TREE_PURPOSE (tmp) = se.expr;
+	TREE_VALUE (tmp) = align;
 	TREE_PURPOSE (TREE_CHAIN (tmp)) = init_stmtlist;
 	TREE_VALUE (TREE_CHAIN (tmp)) = cleanup_stmtlist;
       }
@@ -6632,7 +6637,7 @@ create_main_function (tree fndecl)
   /* "return 0".  */
   tmp = fold_build2_loc (input_location, MODIFY_EXPR, integer_type_node,
 			 DECL_RESULT (ftn_main),
-			 build_int_cst (integer_type_node, 0));
+			 integer_zero_node);
   tmp = build1_v (RETURN_EXPR, tmp);
   gfc_add_expr_to_block (&body, tmp);
 
@@ -6740,7 +6745,7 @@ add_clause (gfc_symbol *sym, gfc_omp_map_op map_op)
 
   n = gfc_get_omp_namelist ();
   n->sym = sym;
-  n->u.map_op = map_op;
+  n->u.map.op = map_op;
 
   if (!module_oacc_clauses)
     module_oacc_clauses = gfc_get_omp_clauses ();
@@ -6842,10 +6847,10 @@ finish_oacc_declare (gfc_namespace *ns, gfc_symbol *sym, bool block)
 
   for (n = omp_clauses->lists[OMP_LIST_MAP]; n; n = n->next)
     {
-      switch (n->u.map_op)
+      switch (n->u.map.op)
 	{
 	  case OMP_MAP_DEVICE_RESIDENT:
-	    n->u.map_op = OMP_MAP_FORCE_ALLOC;
+	    n->u.map.op = OMP_MAP_FORCE_ALLOC;
 	    break;
 
 	  default:
@@ -7051,8 +7056,8 @@ gfc_conv_cfi_to_gfc (stmtblock_t *init, stmtblock_t *finally,
   if (sym->ts.type == BT_CHARACTER
       && !INTEGER_CST_P (sym->ts.u.cl->backend_decl))
     {
-      gfc_conv_string_length (sym->ts.u.cl, NULL, init);
-      gfc_trans_vla_type_sizes (sym, init);
+      gfc_conv_string_length (sym->ts.u.cl, NULL, &block);
+      gfc_trans_vla_type_sizes (sym, &block);
     }
 
   /* gfc->data = cfi->base_addr - or for scalars: gfc = cfi->base_addr.
